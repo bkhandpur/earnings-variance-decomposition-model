@@ -1,0 +1,28 @@
+# Core numerics -- required.
+numpy>=1.23,<3
+pandas>=1.5,<3
+
+# Market data provider for vol_decom.data. Only needed for live fetches; the
+# package (and the whole test suite) runs without it on cached or supplied data.
+yfinance>=0.2.40
+
+# Parquet engine backing the on-disk cache in ./cache.
+pyarrow>=12.0
+
+# Required by yfinance's earnings-calendar path, which scrapes an HTML table
+# via pandas.read_html. yfinance does not declare it, so price fetches succeed
+# while earnings-date fetches fail with a bare ImportError without it.
+lxml>=4.9
+
+# Default charting backend. Every visualizer function returns a figure object.
+matplotlib>=3.6
+
+# Optional interactive charting: pass backend="plotly" to any plot function.
+plotly>=5.15
+
+# Optional. Supplies scipy.special.ndtr for the Black-Scholes normal CDF in
+# vol_decom.backtest; a math.erf fallback is used when absent.
+scipy>=1.9
+
+# Test suite.
+pytest>=7.2

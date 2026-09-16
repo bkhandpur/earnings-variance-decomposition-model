@@ -1,0 +1,57 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vol-decom"
+version = "1.0.0"
+description = "Earnings volatility variance decomposition, isolating discrete jump variance from continuous diffusive volatility"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Benjamin Khandpur" }]
+keywords = [
+    "quantitative-finance", "volatility", "options", "earnings",
+    "variance-decomposition", "realized-volatility", "yang-zhang",
+    "volatility-risk-premium", "backtesting", "delta-hedging",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Financial and Insurance Industry",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Office/Business :: Financial :: Investment",
+    "Typing :: Typed",
+]
+dependencies = [
+    "numpy>=1.23,<3",
+    "pandas>=1.5,<3",
+    "pyarrow>=12.0",
+]
+
+[project.optional-dependencies]
+data = ["yfinance>=0.2.40", "lxml>=4.9"]
+plot = ["matplotlib>=3.6", "plotly>=5.15"]
+fast = ["scipy>=1.9"]
+test = ["pytest>=7.2"]
+all = [
+    "yfinance>=0.2.40", "lxml>=4.9", "matplotlib>=3.6",
+    "plotly>=5.15", "scipy>=1.9", "pytest>=7.2",
+]
+
+[project.scripts]
+vol-decom = "main:main"
+
+[tool.setuptools]
+packages = ["vol_decom"]
+py-modules = ["main"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+filterwarnings = ["ignore::DeprecationWarning", "ignore::PendingDeprecationWarning"]

@@ -8,3 +8,6 @@ output/
 figures/
 *.egg-info/
 .DS_Store
+build/
+dist/
+.ruff_cache/

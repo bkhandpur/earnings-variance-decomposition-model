@@ -10,11 +10,12 @@ writes PNG/PDF directly. Pass ``backend="plotly"`` to any function for an
 interactive figure instead, Plotly is an optional dependency and its absence
 raises a clear :class:`ImportError` rather than failing obscurely.
 """
+
 from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any, Dict, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, Optional, Union
 
 import numpy as np
 import pandas as pd
@@ -40,8 +41,8 @@ def _require_matplotlib():
         ImportError: If matplotlib is not installed.
     """
     try:
-        import matplotlib
         import matplotlib.pyplot as plt
+
         return plt
     except ImportError as exc:  # pragma. No cover - environment dependent
         raise ImportError(
@@ -58,6 +59,7 @@ def _require_plotly():
     """
     try:
         import plotly.graph_objects as go
+
         return go
     except ImportError as exc:  # pragma. No cover - environment dependent
         raise ImportError(
@@ -81,10 +83,12 @@ def _pct(x: float) -> str:
     return f"{x * 100:.1f}%"
 
 
-def plot_vol_cone(cone: pd.DataFrame,
-                  current: Optional[pd.Series] = None,
-                  title: Optional[str] = None,
-                  backend: str = "matplotlib") -> Any:
+def plot_vol_cone(
+    cone: pd.DataFrame,
+    current: Optional[pd.Series] = None,
+    title: Optional[str] = None,
+    backend: str = "matplotlib",
+) -> Any:
     """Plot a volatility cone. Realized-vol quantiles against horizon.
 
     The cone shows the historical distribution of trailing realized vol at
@@ -112,8 +116,7 @@ def plot_vol_cone(cone: pd.DataFrame,
     if cone is None or cone.empty:
         raise ValueError("plot_vol_cone requires a non-empty cone frame.")
 
-    qcols = sorted([c for c in cone.columns if c.startswith("q")],
-                   key=lambda c: int(c[1:]))
+    qcols = sorted([c for c in cone.columns if c.startswith("q")], key=lambda c: int(c[1:]))
     if not qcols:
         raise ValueError("cone frame exposes no quantile columns (expected 'q05', ...).")
 
@@ -131,34 +134,65 @@ def plot_vol_cone(cone: pd.DataFrame,
         # Fill between symmetric quantile pairs, outermost first.
         pairs = list(zip(qcols, reversed(qcols)))[: len(qcols) // 2]
         for lo, hi in pairs:
-            fig.add_trace(go.Scatter(
-                x=np.concatenate([windows, windows[::-1]]),
-                y=np.concatenate([cone[hi].to_numpy(), cone[lo].to_numpy()[::-1]]),
-                fill="toself", mode="lines", line=dict(width=0),
-                name=f"{lo}-{hi}", opacity=0.25, hoverinfo="skip",
-            ))
+            fig.add_trace(
+                go.Scatter(
+                    x=np.concatenate([windows, windows[::-1]]),
+                    y=np.concatenate([cone[hi].to_numpy(), cone[lo].to_numpy()[::-1]]),
+                    fill="toself",
+                    mode="lines",
+                    line=dict(width=0),
+                    name=f"{lo}-{hi}",
+                    opacity=0.25,
+                    hoverinfo="skip",
+                )
+            )
         mid = "q50" if "q50" in cone.columns else qcols[len(qcols) // 2]
-        fig.add_trace(go.Scatter(x=windows, y=cone[mid], mode="lines+markers",
-                                 name=f"median ({mid})", line=dict(width=2)))
+        fig.add_trace(
+            go.Scatter(
+                x=windows,
+                y=cone[mid],
+                mode="lines+markers",
+                name=f"median ({mid})",
+                line=dict(width=2),
+            )
+        )
         if current is not None:
-            fig.add_trace(go.Scatter(x=windows, y=current.to_numpy(), mode="lines+markers",
-                                     name="current", line=dict(dash="dash", width=2)))
-        fig.update_layout(title=title, xaxis_title="Lookback window (trading days)",
-                          yaxis_title="Annualized volatility", yaxis_tickformat=".0%",
-                          template="plotly_white")
+            fig.add_trace(
+                go.Scatter(
+                    x=windows,
+                    y=current.to_numpy(),
+                    mode="lines+markers",
+                    name="current",
+                    line=dict(dash="dash", width=2),
+                )
+            )
+        fig.update_layout(
+            title=title,
+            xaxis_title="Lookback window (trading days)",
+            yaxis_title="Annualized volatility",
+            yaxis_tickformat=".0%",
+            template="plotly_white",
+        )
         return fig
 
     plt = _require_matplotlib()
     fig, ax = plt.subplots(figsize=(9, 5.5))
     pairs = list(zip(qcols, reversed(qcols)))[: len(qcols) // 2]
     for i, (lo, hi) in enumerate(pairs):
-        ax.fill_between(windows, cone[lo], cone[hi], alpha=0.20 + 0.12 * i,
-                        color="steelblue", label=f"{lo}-{hi}")
+        ax.fill_between(
+            windows,
+            cone[lo],
+            cone[hi],
+            alpha=0.20 + 0.12 * i,
+            color="steelblue",
+            label=f"{lo}-{hi}",
+        )
     mid = "q50" if "q50" in cone.columns else qcols[len(qcols) // 2]
     ax.plot(windows, cone[mid], marker="o", color="navy", lw=2, label=f"median ({mid})")
     if current is not None:
-        ax.plot(windows, current.to_numpy(), marker="s", ls="--", color="crimson",
-                lw=2, label="current")
+        ax.plot(
+            windows, current.to_numpy(), marker="s", ls="--", color="crimson", lw=2, label="current"
+        )
     ax.set_xlabel("Lookback window (trading days)")
     ax.set_ylabel("Annualized volatility")
     ax.set_title(title)
@@ -169,12 +203,14 @@ def plot_vol_cone(cone: pd.DataFrame,
     return fig
 
 
-def plot_jump_distribution(events: pd.DataFrame,
-                           column: str = "sigma_jump",
-                           bins: int = 20,
-                           show_baseline: bool = True,
-                           title: Optional[str] = None,
-                           backend: str = "matplotlib") -> Any:
+def plot_jump_distribution(
+    events: pd.DataFrame,
+    column: str = "sigma_jump",
+    bins: int = 20,
+    show_baseline: bool = True,
+    title: Optional[str] = None,
+    backend: str = "matplotlib",
+) -> Any:
     """Histogram the distribution of isolated earnings jumps.
 
     Two things to read off this chart. First, the *mass at zero*, where bars stacked
@@ -205,8 +241,7 @@ def plot_jump_distribution(events: pd.DataFrame,
         raise ValueError("plot_jump_distribution requires a non-empty event frame.")
     if column not in events.columns:
         raise ValueError(
-            f"column '{column}' not in events frame. Available columns are "
-            f"{list(events.columns)}"
+            f"column '{column}' not in events frame. Available columns are {list(events.columns)}"
         )
 
     vals = events[column].dropna().to_numpy(dtype=float)
@@ -221,16 +256,26 @@ def plot_jump_distribution(events: pd.DataFrame,
     if backend == "plotly":
         go = _require_plotly()
         fig = go.Figure()
-        fig.add_trace(go.Histogram(x=vals, nbinsx=bins, name=column,
-                                   marker_line_width=1, opacity=0.8))
-        fig.add_vline(x=mean_v, line_dash="dash", line_color="crimson",
-                      annotation_text=f"mean {mean_v:.4f}")
-        fig.add_vline(x=median_v, line_dash="dot", line_color="darkgreen",
-                      annotation_text=f"median {median_v:.4f}")
+        fig.add_trace(
+            go.Histogram(x=vals, nbinsx=bins, name=column, marker_line_width=1, opacity=0.8)
+        )
+        fig.add_vline(
+            x=mean_v, line_dash="dash", line_color="crimson", annotation_text=f"mean {mean_v:.4f}"
+        )
+        fig.add_vline(
+            x=median_v,
+            line_dash="dot",
+            line_color="darkgreen",
+            annotation_text=f"median {median_v:.4f}",
+        )
         subtitle = f"n={vals.size}" + (f", {n_zero} clamped at zero" if n_zero else "")
-        fig.update_layout(title=f"{title}<br><sub>{subtitle}</sub>",
-                          xaxis_title=column, yaxis_title="Events",
-                          template="plotly_white", bargap=0.05)
+        fig.update_layout(
+            title=f"{title}<br><sub>{subtitle}</sub>",
+            xaxis_title=column,
+            yaxis_title="Events",
+            template="plotly_white",
+            bargap=0.05,
+        )
         return fig
 
     plt = _require_matplotlib()
@@ -240,8 +285,7 @@ def plot_jump_distribution(events: pd.DataFrame,
     ax.axvline(median_v, color="darkgreen", ls=":", lw=2, label=f"median {median_v:.4f}")
     if show_baseline and "sigma_baseline" in events.columns:
         base = float(events["sigma_baseline"].mean())
-        ax.axvline(base, color="grey", ls="-.", lw=1.5,
-                   label=f"mean baseline {base:.4f}")
+        ax.axvline(base, color="grey", ls="-.", lw=1.5, label=f"mean baseline {base:.4f}")
     subtitle = f"n = {vals.size}" + (f"   |   {n_zero} clamped at zero" if n_zero else "")
     ax.set_title(f"{title}\n{subtitle}", fontsize=11)
     ax.set_xlabel(column)
@@ -252,9 +296,9 @@ def plot_jump_distribution(events: pd.DataFrame,
     return fig
 
 
-def plot_decomposition_timeline(events: pd.DataFrame,
-                                title: Optional[str] = None,
-                                backend: str = "matplotlib") -> Any:
+def plot_decomposition_timeline(
+    events: pd.DataFrame, title: Optional[str] = None, backend: str = "matplotlib"
+) -> Any:
     """Plot baseline, total and jump volatility per event, in time order.
 
     This is the decomposition made visible. For each event, how much of the
@@ -296,20 +340,51 @@ def plot_decomposition_timeline(events: pd.DataFrame,
     if backend == "plotly":
         go = _require_plotly()
         from plotly.subplots import make_subplots
-        fig = make_subplots(rows=2, cols=1, shared_xaxes=True,
-                            row_heights=[0.68, 0.32], vertical_spacing=0.08,
-                            subplot_titles=("Volatility by event", "Variance ratio"))
-        fig.add_trace(go.Bar(x=x, y=events["sigma_baseline"], name="baseline (diffusive)",
-                             marker_color="lightsteelblue"), row=1, col=1)
-        fig.add_trace(go.Bar(x=x, y=events["sigma_jump"], name="jump",
-                             marker_color="crimson"), row=1, col=1)
-        fig.add_trace(go.Scatter(x=x, y=events["sigma_total"], name="total (event window)",
-                                 mode="lines+markers", line=dict(color="navy", width=2)),
-                      row=1, col=1)
+
+        fig = make_subplots(
+            rows=2,
+            cols=1,
+            shared_xaxes=True,
+            row_heights=[0.68, 0.32],
+            vertical_spacing=0.08,
+            subplot_titles=("Volatility by event", "Variance ratio"),
+        )
+        fig.add_trace(
+            go.Bar(
+                x=x,
+                y=events["sigma_baseline"],
+                name="baseline (diffusive)",
+                marker_color="lightsteelblue",
+            ),
+            row=1,
+            col=1,
+        )
+        fig.add_trace(
+            go.Bar(x=x, y=events["sigma_jump"], name="jump", marker_color="crimson"), row=1, col=1
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=x,
+                y=events["sigma_total"],
+                name="total (event window)",
+                mode="lines+markers",
+                line=dict(color="navy", width=2),
+            ),
+            row=1,
+            col=1,
+        )
         if "variance_ratio" in events.columns:
-            fig.add_trace(go.Scatter(x=x, y=events["variance_ratio"], name="variance ratio",
-                                     mode="lines+markers", line=dict(color="darkorange")),
-                          row=2, col=1)
+            fig.add_trace(
+                go.Scatter(
+                    x=x,
+                    y=events["variance_ratio"],
+                    name="variance ratio",
+                    mode="lines+markers",
+                    line=dict(color="darkorange"),
+                ),
+                row=2,
+                col=1,
+            )
             fig.add_hline(y=1.0, line_dash="dash", line_color="grey", row=2, col=1)
         fig.update_layout(title=title, barmode="group", template="plotly_white")
         fig.update_yaxes(tickformat=".0%", row=1, col=1)
@@ -317,18 +392,34 @@ def plot_decomposition_timeline(events: pd.DataFrame,
 
     plt = _require_matplotlib()
     fig, (ax1, ax2) = plt.subplots(
-        2, 1, figsize=(11, 7), sharex=True,
+        2,
+        1,
+        figsize=(11, 7),
+        sharex=True,
         gridspec_kw={"height_ratios": [2.1, 1.0], "hspace": 0.12},
     )
     # Grouped, not stacked. Volatilities are not additive (see the docstring).
     width = max(4.0, 200.0 / max(len(x), 1))
     offset = pd.Timedelta(days=width / 2.0)
-    ax1.bar(x - offset, events["sigma_baseline"], width=width,
-            color="lightsteelblue", label="baseline (diffusive)")
-    ax1.bar(x + offset, events["sigma_jump"], width=width,
-            color="crimson", alpha=0.85, label="jump")
-    ax1.plot(x, events["sigma_total"], marker="o", ms=4, color="navy", lw=1.5,
-             label="total (event window)")
+    ax1.bar(
+        x - offset,
+        events["sigma_baseline"],
+        width=width,
+        color="lightsteelblue",
+        label="baseline (diffusive)",
+    )
+    ax1.bar(
+        x + offset, events["sigma_jump"], width=width, color="crimson", alpha=0.85, label="jump"
+    )
+    ax1.plot(
+        x,
+        events["sigma_total"],
+        marker="o",
+        ms=4,
+        color="navy",
+        lw=1.5,
+        label="total (event window)",
+    )
     ax1.set_ylabel("Annualized volatility")
     ax1.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"{v:.0%}"))
     ax1.set_title(title)
@@ -351,9 +442,7 @@ def plot_decomposition_timeline(events: pd.DataFrame,
     return fig
 
 
-def plot_pnl_curve(result: Any,
-                   title: Optional[str] = None,
-                   backend: str = "matplotlib") -> Any:
+def plot_pnl_curve(result: Any, title: Optional[str] = None, backend: str = "matplotlib") -> Any:
     """Plot the cumulative P&L curve and per-event returns of a backtest.
 
     The upper panel is the compounded equity curve with its drawdown shaded,
@@ -411,30 +500,50 @@ def plot_pnl_curve(result: Any,
     if backend == "plotly":
         go = _require_plotly()
         from plotly.subplots import make_subplots
-        fig = make_subplots(rows=2, cols=1, shared_xaxes=True,
-                            row_heights=[0.62, 0.38], vertical_spacing=0.09,
-                            subplot_titles=("Cumulative equity", "Return per event"))
-        fig.add_trace(go.Scatter(x=equity.index, y=equity, mode="lines+markers",
-                                 name="equity", line=dict(color="navy", width=2)),
-                      row=1, col=1)
+
+        fig = make_subplots(
+            rows=2,
+            cols=1,
+            shared_xaxes=True,
+            row_heights=[0.62, 0.38],
+            vertical_spacing=0.09,
+            subplot_titles=("Cumulative equity", "Return per event"),
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=equity.index,
+                y=equity,
+                mode="lines+markers",
+                name="equity",
+                line=dict(color="navy", width=2),
+            ),
+            row=1,
+            col=1,
+        )
         fig.add_hline(y=1.0, line_dash="dash", line_color="grey", row=1, col=1)
         colors = ["seagreen" if v >= 0 else "crimson" for v in returns]
-        fig.add_trace(go.Bar(x=returns.index, y=returns, name="return/event",
-                             marker_color=colors), row=2, col=1)
-        fig.update_layout(title=f"{title}<br><sub>{subtitle}</sub>",
-                          template="plotly_white", showlegend=False)
+        fig.add_trace(
+            go.Bar(x=returns.index, y=returns, name="return/event", marker_color=colors),
+            row=2,
+            col=1,
+        )
+        fig.update_layout(
+            title=f"{title}<br><sub>{subtitle}</sub>", template="plotly_white", showlegend=False
+        )
         fig.update_yaxes(tickformat=".0%", row=2, col=1)
         return fig
 
     plt = _require_matplotlib()
     fig, (ax1, ax2) = plt.subplots(
-        2, 1, figsize=(11, 7), sharex=True,
+        2,
+        1,
+        figsize=(11, 7),
+        sharex=True,
         gridspec_kw={"height_ratios": [1.6, 1.0], "hspace": 0.12},
     )
     ax1.plot(equity.index, equity, marker="o", ms=4, color="navy", lw=2, label="equity")
     ax1.axhline(1.0, color="grey", ls="--", lw=1)
-    ax1.fill_between(equity.index, equity, peak, color="crimson", alpha=0.18,
-                     label="drawdown")
+    ax1.fill_between(equity.index, equity, peak, color="crimson", alpha=0.18, label="drawdown")
     ax1.set_ylabel("Equity (1.0 = flat)")
     ax1.set_title(f"{title}\n{subtitle}", fontsize=11)
     ax1.legend(fontsize=8, loc="upper left")
@@ -459,9 +568,7 @@ def plot_pnl_curve(result: Any,
     return fig
 
 
-def plot_vrp_scatter(vrp: Any,
-                     title: Optional[str] = None,
-                     backend: str = "matplotlib") -> Any:
+def plot_vrp_scatter(vrp: Any, title: Optional[str] = None, backend: str = "matplotlib") -> Any:
     """Scatter implied against realized event moves, with the 45-degree line.
 
     Points below the diagonal are events where the market charged more than
@@ -497,31 +604,64 @@ def plot_vrp_scatter(vrp: Any,
     mean_vrp = getattr(vrp, "mean_vrp", float(np.nanmean(imp - rea)))
     hit = getattr(vrp, "hit_rate", float(np.nanmean(imp > rea)))
     source = getattr(vrp, "implied_source", "unknown")
-    subtitle = (f"n={len(per_event)}   mean VRP {mean_vrp * 100:+.2f} pts   "
-                f"hit rate {_pct(hit)}   implied source {source}")
+    subtitle = (
+        f"n={len(per_event)}   mean VRP {mean_vrp * 100:+.2f} pts   "
+        f"hit rate {_pct(hit)}   implied source {source}"
+    )
     title = title or "Implied vs realized earnings move"
 
     if backend == "plotly":
         go = _require_plotly()
         fig = go.Figure()
-        fig.add_trace(go.Scatter(x=rea, y=imp, mode="markers", name="events",
-                                 marker=dict(size=9, color="steelblue",
-                                             line=dict(width=1, color="white"))))
-        fig.add_trace(go.Scatter(x=[0, lim], y=[0, lim], mode="lines", name="fair (45°)",
-                                 line=dict(dash="dash", color="grey")))
-        fig.update_layout(title=f"{title}<br><sub>{subtitle}</sub>",
-                          xaxis_title="Realized move", yaxis_title="Implied move",
-                          xaxis_tickformat=".0%", yaxis_tickformat=".0%",
-                          template="plotly_white")
+        fig.add_trace(
+            go.Scatter(
+                x=rea,
+                y=imp,
+                mode="markers",
+                name="events",
+                marker=dict(size=9, color="steelblue", line=dict(width=1, color="white")),
+            )
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=[0, lim],
+                y=[0, lim],
+                mode="lines",
+                name="fair (45°)",
+                line=dict(dash="dash", color="grey"),
+            )
+        )
+        fig.update_layout(
+            title=f"{title}<br><sub>{subtitle}</sub>",
+            xaxis_title="Realized move",
+            yaxis_title="Implied move",
+            xaxis_tickformat=".0%",
+            yaxis_tickformat=".0%",
+            template="plotly_white",
+        )
         return fig
 
     plt = _require_matplotlib()
     fig, ax = plt.subplots(figsize=(7.5, 7))
     below = imp > rea
-    ax.scatter(rea[below], imp[below], s=55, color="seagreen", edgecolor="white",
-               zorder=3, label="implied > realized (seller wins)")
-    ax.scatter(rea[~below], imp[~below], s=55, color="crimson", edgecolor="white",
-               zorder=3, label="realized > implied (seller loses)")
+    ax.scatter(
+        rea[below],
+        imp[below],
+        s=55,
+        color="seagreen",
+        edgecolor="white",
+        zorder=3,
+        label="implied > realized (seller wins)",
+    )
+    ax.scatter(
+        rea[~below],
+        imp[~below],
+        s=55,
+        color="crimson",
+        edgecolor="white",
+        zorder=3,
+        label="realized > implied (seller loses)",
+    )
     ax.plot([0, lim], [0, lim], ls="--", color="grey", lw=1.5, label="fair (45°)")
     ax.set_xlim(0, lim)
     ax.set_ylim(0, lim)

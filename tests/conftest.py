@@ -1,4 +1,5 @@
 """Shared synthetic fixtures. No network access anywhere in the test suite."""
+
 from __future__ import annotations
 
 from typing import Tuple
@@ -10,12 +11,14 @@ import pytest
 TRADING_DAYS = 252
 
 
-def make_ohlcv(returns: np.ndarray,
-               start_price: float = 100.0,
-               start: str = "2019-01-02",
-               intraday_range: float = 0.006,
-               seed: int = 0,
-               ticker: str = "TEST") -> pd.DataFrame:
+def make_ohlcv(
+    returns: np.ndarray,
+    start_price: float = 100.0,
+    start: str = "2019-01-02",
+    intraday_range: float = 0.006,
+    seed: int = 0,
+    ticker: str = "TEST",
+) -> pd.DataFrame:
     """Build a valid OHLCV frame from a series of log returns.
 
     Open/High/Low are synthesized around the close path so that the frame
@@ -46,8 +49,13 @@ def make_ohlcv(returns: np.ndarray,
     open_ = np.clip(prev * (1.0 + rng.normal(0.0, intraday_range / 2, n)), low, high)
 
     df = pd.DataFrame(
-        {"Open": open_, "High": high, "Low": low, "Close": close,
-         "Volume": np.full(n, 1_000_000.0)},
+        {
+            "Open": open_,
+            "High": high,
+            "Low": low,
+            "Close": close,
+            "Volume": np.full(n, 1_000_000.0),
+        },
         index=idx,
     )
     df.index.name = "Date"

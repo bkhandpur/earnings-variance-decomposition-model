@@ -28,6 +28,7 @@ Sweep the mispricing assumption and write charts.
 
     python main.py --ticker INTC --iv-multiplier 1.15 --plot --outdir figures
 """
+
 from __future__ import annotations
 
 import argparse
@@ -48,6 +49,7 @@ from vol_decom.data import (
     load_earnings_dates,
     load_earnings_dates_from_csv,
     load_prices,
+    validate_ohlcv,
 )
 from vol_decom.engine import (
     DecompositionConfig,
@@ -89,135 +91,259 @@ def build_parser() -> argparse.ArgumentParser:
               python main.py --ticker INTC --iv-multiplier 1.15 --plot --outdir figures
 
             note on --iv-multiplier
-              The backtest has to be told what the options market charged for each
-              event. With no option surface supplied, the default k=1.0 prices every
-              event at exactly the jump this name historically delivers, so the
-              expected edge is zero by construction and the run measures risk, not
-              profitability. Raising k asserts that the market overprices earnings by
-              that factor, any resulting profit follows from that assumption. See the
-              README's Methodology section.
+              The default uses an expanding estimate of completed historical event
+              moves available at entry. It is a scenario assumption, not option-market
+              IV or a promise of zero expected P&L. See docs/methodology.md.
             """),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
 
-    parser.add_argument("--version", action="version",
-                        version=f"vol_decom {__version__}")
+    parser.add_argument("--version", action="version", version=f"vol_decom {__version__}")
 
     data = parser.add_argument_group("data")
-    data.add_argument("-t", "--ticker", "--tickers", dest="tickers", nargs="+",
-                      metavar="SYM",
-                      help="one or more equity symbols, e.g. INTC, or "
-                           "'INTC AAPL NVDA TSLA' to run a cross-section")
-    data.add_argument("--universe-csv", metavar="PATH",
-                      help="read the ticker list from a CSV (first column, or a "
-                           "column named 'ticker'/'symbol'). Use for universes "
-                           "too large for the command line")
-    data.add_argument("--years", type=float, default=7.0, metavar="N",
-                      help="years of price history to load (default %(default)s)")
-    data.add_argument("--start", metavar="YYYY-MM-DD",
-                      help="explicit start date, overrides --years")
-    data.add_argument("--end", metavar="YYYY-MM-DD",
-                      help="explicit end date (default, today)")
-    data.add_argument("--earnings-csv", metavar="PATH",
-                      help="load announcement dates from a CSV instead of the "
-                           "provider, needed for history beyond what yfinance "
-                           "retains (~3 years) or for symbols it does not cover")
-    data.add_argument("--earnings-limit", type=int, default=40, metavar="N",
-                      help="max announcements to request (default %(default)s)")
-    data.add_argument("--cache-dir", default=str(DEFAULT_CACHE_DIR), metavar="DIR",
-                      help="on-disk cache location (default %(default)s)")
-    data.add_argument("--no-cache", action="store_true",
-                      help="bypass the cache and refetch from the provider")
-    data.add_argument("--clear-cache", action="store_true",
-                      help="delete this ticker's cache entries before running")
-    data.add_argument("--strict-gaps", action="store_true",
-                      help="abort instead of warning if the price history has "
-                           "an anomalous gap")
+    data.add_argument(
+        "-t",
+        "--ticker",
+        "--tickers",
+        dest="tickers",
+        nargs="+",
+        metavar="SYM",
+        help="one or more equity symbols, e.g. INTC, or "
+        "'INTC AAPL NVDA TSLA' to run a cross-section",
+    )
+    data.add_argument(
+        "--universe-csv",
+        metavar="PATH",
+        help="read the ticker list from a CSV (first column, or a "
+        "column named 'ticker'/'symbol'). Use for universes "
+        "too large for the command line",
+    )
+    data.add_argument(
+        "--prices-csv",
+        metavar="PATH",
+        help="offline OHLCV CSV with Date column; requires --earnings-csv",
+    )
+    data.add_argument(
+        "--years",
+        type=float,
+        default=7.0,
+        metavar="N",
+        help="years of price history to load (default %(default)s)",
+    )
+    data.add_argument(
+        "--start", metavar="YYYY-MM-DD", help="explicit start date, overrides --years"
+    )
+    data.add_argument("--end", metavar="YYYY-MM-DD", help="explicit end date (default, today)")
+    data.add_argument(
+        "--earnings-csv",
+        metavar="PATH",
+        help="load announcement dates from a CSV instead of the "
+        "provider, needed for history beyond what yfinance "
+        "retains (~3 years) or for symbols it does not cover",
+    )
+    data.add_argument(
+        "--earnings-limit",
+        type=int,
+        default=40,
+        metavar="N",
+        help="max announcements to request (default %(default)s)",
+    )
+    data.add_argument(
+        "--cache-dir",
+        default=str(DEFAULT_CACHE_DIR),
+        metavar="DIR",
+        help="on-disk cache location (default %(default)s)",
+    )
+    data.add_argument(
+        "--no-cache", action="store_true", help="bypass the cache and refetch from the provider"
+    )
+    data.add_argument(
+        "--clear-cache",
+        action="store_true",
+        help="delete this ticker's cache entries before running",
+    )
+    data.add_argument(
+        "--strict-gaps",
+        action="store_true",
+        help="abort instead of warning if the price history has an anomalous gap",
+    )
 
     model = parser.add_argument_group("decomposition")
-    model.add_argument("--baseline-windows", type=int, nargs="+", default=[20, 30, 60],
-                       metavar="N",
-                       help="baseline lookback windows in trading days, the first "
-                            "is used for the jump subtraction (default 20 30 60)")
-    model.add_argument("--event-window", type=int, default=2, metavar="N",
-                       help="sessions in the event window (default, %(default)s, 2 is "
-                            "timing-agnostic across before-open and after-close "
-                            "announcements)")
-    model.add_argument("--post-windows", type=int, nargs="+", default=[5, 10],
-                       metavar="N",
-                       help="post-event realized-vol horizons (default 5 10)")
-    model.add_argument("--estimator", choices=["close_to_close", "parkinson", "yang_zhang"],
-                       default="close_to_close",
-                       help="baseline volatility estimator (default %(default)s)")
-    model.add_argument("--baseline-gap", type=int, default=0, metavar="N",
-                       help="sessions to leave between the baseline window and the "
-                            "event, to avoid pre-announcement vol ramp (default 0)")
-    model.add_argument("--announcement-offset", type=int, default=0, metavar="N",
-                       help="sessions to shift the event forward from the "
-                            "announcement date (default 0)")
-    model.add_argument("--no-annualize", action="store_true",
-                       help="report per-session volatility instead of annualizing "
-                            "by sqrt(252)")
-    model.add_argument("--prototype-mode", action="store_true",
-                       help="reproduce the original prototype exactly, 20-day "
-                            "baseline, demeaned population variance on a 2-session "
-                            "event window, daily (un-annualized) output. Known to "
-                            "zero out roughly half of all events, see the README")
+    model.add_argument(
+        "--baseline-windows",
+        type=int,
+        nargs="+",
+        default=[20, 30, 60],
+        metavar="N",
+        help="baseline lookback windows in trading days, the first "
+        "is used for the jump subtraction (default 20 30 60)",
+    )
+    model.add_argument(
+        "--event-window",
+        type=int,
+        default=2,
+        metavar="N",
+        help="sessions in the event window (default, %(default)s, 2 is "
+        "timing-agnostic across before-open and after-close "
+        "announcements)",
+    )
+    model.add_argument(
+        "--post-windows",
+        type=int,
+        nargs="+",
+        default=[5, 10],
+        metavar="N",
+        help="post-event realized-vol horizons (default 5 10)",
+    )
+    model.add_argument(
+        "--estimator",
+        choices=["close_to_close", "parkinson", "yang_zhang"],
+        default="close_to_close",
+        help="baseline volatility estimator (default %(default)s)",
+    )
+    model.add_argument(
+        "--baseline-gap",
+        type=int,
+        default=0,
+        metavar="N",
+        help="sessions to leave between the baseline window and the "
+        "event, to avoid pre-announcement vol ramp (default 0)",
+    )
+    model.add_argument(
+        "--announcement-offset",
+        type=int,
+        default=0,
+        metavar="N",
+        help="sessions to shift the event forward from the announcement date (default 0)",
+    )
+    model.add_argument(
+        "--no-annualize",
+        action="store_true",
+        help="report per-session volatility instead of annualizing by sqrt(252)",
+    )
+    model.add_argument(
+        "--prototype-mode",
+        action="store_true",
+        help="reproduce the original prototype exactly, 20-day "
+        "baseline, demeaned population variance on a 2-session "
+        "event window, daily (un-annualized) output. Known to "
+        "zero out roughly half of all events, see the README",
+    )
 
     vrp = parser.add_argument_group("volatility risk premium")
-    vrp.add_argument("--implied-vol", type=float, metavar="PCT",
-                     help="annualized ATM IV, in percent, applied to every event "
-                          "(e.g. 65.6). Without this the VRP falls back to a "
-                          "historical proxy whose mean is ~0 by construction")
-    vrp.add_argument("--iv-days", type=int, default=21, metavar="N",
-                     help="trading days to expiry for the --implied-vol term "
-                          "(default %(default)s, i.e. ~30 calendar days)")
-    vrp.add_argument("--trim", type=float, default=0.05, metavar="Q",
-                     help="two-sided quantile trimmed for the ex-outlier mean "
-                          "(default %(default)s, 0 disables)")
+    vrp.add_argument(
+        "--implied-vol",
+        type=float,
+        metavar="PCT",
+        help="annualized ATM IV, in percent, applied to every event "
+        "(e.g. 65.6). Without this the VRP falls back to a "
+        "historical proxy whose mean is ~0 by construction",
+    )
+    vrp.add_argument(
+        "--iv-days",
+        type=int,
+        default=21,
+        metavar="N",
+        help="trading days to expiry for the --implied-vol term "
+        "(default %(default)s, i.e. ~30 calendar days)",
+    )
+    vrp.add_argument(
+        "--trim",
+        type=float,
+        default=0.05,
+        metavar="Q",
+        help="two-sided quantile trimmed for the ex-outlier mean (default %(default)s, 0 disables)",
+    )
 
     bt = parser.add_argument_group("backtest")
-    bt.add_argument("--no-backtest", action="store_true",
-                    help="skip the backtest stage")
-    bt.add_argument("--structure", choices=["calendar", "short_straddle"],
-                    default="calendar",
-                    help="trade structure (default %(default)s)")
-    bt.add_argument("--entry-offset", type=int, default=5, metavar="N",
-                    help="sessions before the event to open (default %(default)s)")
-    bt.add_argument("--exit-offset", type=int, default=1, metavar="N",
-                    help="sessions after the event to close (default %(default)s)")
-    bt.add_argument("--iv-multiplier", type=float, default=1.0, metavar="K",
-                    help="how much the market is assumed to overprice the event "
-                         "move. 1.0 (default) = priced fairly, zero expected edge")
-    bt.add_argument("--cost-bps", type=float, default=25.0, metavar="BPS",
-                    help="transaction cost in bps of premium per leg "
-                         "(default %(default)s)")
-    bt.add_argument("--slippage-vol", type=float, default=0.0, metavar="PTS",
-                    help="adverse slippage in vol points, as a decimal "
-                         "(0.01 = 1 vol point, default %(default)s)")
+    bt.add_argument("--no-backtest", action="store_true", help="skip the backtest stage")
+    bt.add_argument(
+        "--structure",
+        choices=["calendar", "short_straddle"],
+        default="calendar",
+        help="trade structure (default %(default)s)",
+    )
+    bt.add_argument(
+        "--entry-offset",
+        type=int,
+        default=5,
+        metavar="N",
+        help="sessions before the event to open (default %(default)s)",
+    )
+    bt.add_argument(
+        "--exit-offset",
+        type=int,
+        default=1,
+        metavar="N",
+        help="sessions after the event to close (default %(default)s)",
+    )
+    bt.add_argument(
+        "--iv-multiplier",
+        type=float,
+        default=1.0,
+        metavar="K",
+        help="how much the market is assumed to overprice the event "
+        "move. 1.0 (default) = historical-move scenario",
+    )
+    bt.add_argument(
+        "--cost-bps",
+        type=float,
+        default=25.0,
+        metavar="BPS",
+        help="transaction cost in bps of premium per leg (default %(default)s)",
+    )
+    bt.add_argument(
+        "--slippage-vol",
+        type=float,
+        default=0.0,
+        metavar="PTS",
+        help="adverse slippage in vol points, as a decimal "
+        "(0.01 = 1 vol point, default %(default)s)",
+    )
 
     out = parser.add_argument_group("output")
-    out.add_argument("--plot", action="store_true",
-                     help="render charts (vol cone, jump distribution, "
-                          "decomposition timeline, VRP scatter, P&L curve)")
-    out.add_argument("--backend", choices=["matplotlib", "plotly"], default="matplotlib",
-                     help="charting backend (default %(default)s)")
-    out.add_argument("--outdir", default="output", metavar="DIR",
-                     help="directory for charts and CSVs (default %(default)s)")
-    out.add_argument("--save-csv", action="store_true",
-                     help="write the per-event and per-trade tables as CSV")
-    out.add_argument("--show-events", action="store_true",
-                     help="print the full per-event table rather than a preview")
-    out.add_argument("--summary-only", action="store_true",
-                     help="with several tickers, print only the cross-sectional "
-                          "table and skip the per-ticker detail")
-    out.add_argument("--fail-fast", action="store_true",
-                     help="abort the whole run on the first ticker that errors "
-                          "instead of reporting it and continuing")
-    out.add_argument("-v", "--verbose", action="count", default=0,
-                     help="-v for INFO, -vv for DEBUG logging")
-    out.add_argument("-q", "--quiet", action="store_true",
-                     help="suppress warnings")
+    out.add_argument(
+        "--plot",
+        action="store_true",
+        help="render charts (vol cone, jump distribution, "
+        "decomposition timeline, VRP scatter, P&L curve)",
+    )
+    out.add_argument(
+        "--backend",
+        choices=["matplotlib", "plotly"],
+        default="matplotlib",
+        help="charting backend (default %(default)s)",
+    )
+    out.add_argument(
+        "--outdir",
+        default="output",
+        metavar="DIR",
+        help="directory for charts and CSVs (default %(default)s)",
+    )
+    out.add_argument(
+        "--save-csv", action="store_true", help="write the per-event and per-trade tables as CSV"
+    )
+    out.add_argument(
+        "--show-events",
+        action="store_true",
+        help="print the full per-event table rather than a preview",
+    )
+    out.add_argument(
+        "--summary-only",
+        action="store_true",
+        help="with several tickers, print only the cross-sectional "
+        "table and skip the per-ticker detail",
+    )
+    out.add_argument(
+        "--fail-fast",
+        action="store_true",
+        help="abort the whole run on the first ticker that errors "
+        "instead of reporting it and continuing",
+    )
+    out.add_argument(
+        "-v", "--verbose", action="count", default=0, help="-v for INFO, -vv for DEBUG logging"
+    )
+    out.add_argument("-q", "--quiet", action="store_true", help="suppress warnings")
     return parser
 
 
@@ -248,8 +374,7 @@ def _build_decomposition_config(args: argparse.Namespace) -> DecompositionConfig
     )
 
 
-def _report_decomposition(events: pd.DataFrame, cfg: DecompositionConfig,
-                          show_all: bool) -> None:
+def _report_decomposition(events: pd.DataFrame, cfg: DecompositionConfig, show_all: bool) -> None:
     """Print the decomposition summary and per-event table."""
     summary = summarize_decomposition(events)
     unit = "annualized" if cfg.effective_annualized else "per-session"
@@ -257,8 +382,10 @@ def _report_decomposition(events: pd.DataFrame, cfg: DecompositionConfig,
 
     _section(f"VARIANCE DECOMPOSITION  ({n} events, vol figures {unit})")
     print(f"  Baseline estimator          {cfg.estimator}")
-    print(f"  Baseline windows            {list(cfg.baseline_windows)} "
-          f"(primary {cfg.primary_baseline}d)")
+    print(
+        f"  Baseline windows            {list(cfg.baseline_windows)} "
+        f"(primary {cfg.primary_baseline}d)"
+    )
     print(f"  Event window                {cfg.event_window} session(s)")
     print(THIN)
     print(f"  Mean baseline vol           {_fmt(summary['mean_sigma_baseline'])}")
@@ -267,8 +394,8 @@ def _report_decomposition(events: pd.DataFrame, cfg: DecompositionConfig,
     print(f"  Median jump vol             {_fmt(summary['median_sigma_jump'])}")
     print(f"  Mean variance ratio         {_fmt(summary['mean_variance_ratio'], pct=False)}x")
     print(THIN)
-    print(f"  Mean |event move|           {_fmt(summary['mean_abs_event_return'])}")
-    print(f"  Median |event move|         {_fmt(summary['median_abs_event_return'])}")
+    print(f"  Mean largest |session move|           {_fmt(summary['mean_abs_event_return'])}")
+    print(f"  Median largest |session move|         {_fmt(summary['median_abs_event_return'])}")
     print(f"  Downside events             {_fmt(summary['downside_share'])}")
     for key in sorted(k for k in summary if k.startswith("mean_sigma_post_")):
         horizon = key.rsplit("_", 1)[-1]
@@ -290,14 +417,27 @@ def _report_decomposition(events: pd.DataFrame, cfg: DecompositionConfig,
             for date, reason in align.dropped_insufficient[:5]:
                 print(f"    dropped {pd.Timestamp(date).date()}, {reason}")
 
-    cols = ["announcement_date", "sigma_baseline", "sigma_total", "sigma_jump",
-            "abs_event_return", "variance_ratio", "jump_clamped"]
+    cols = [
+        "announcement_date",
+        "sigma_baseline",
+        "sigma_total",
+        "sigma_jump",
+        "abs_event_return",
+        "variance_ratio",
+        "jump_clamped",
+    ]
     cols = [c for c in cols if c in events.columns]
     table = events[cols].copy()
     table["announcement_date"] = pd.to_datetime(table["announcement_date"]).dt.date
     print("\n  Per-event detail")
-    with pd.option_context("display.width", 200, "display.max_columns", 30,
-                           "display.max_rows", None if show_all else 12):
+    with pd.option_context(
+        "display.width",
+        200,
+        "display.max_columns",
+        30,
+        "display.max_rows",
+        None if show_all else 12,
+    ):
         print(textwrap.indent(table.round(4).to_string(), "  "))
     if not show_all and len(table) > 12:
         print(f"  ... {len(table)} events total, pass --show-events for the full table.")
@@ -305,14 +445,16 @@ def _report_decomposition(events: pd.DataFrame, cfg: DecompositionConfig,
 
 def _report_vrp(result, args: argparse.Namespace) -> None:
     """Print the volatility risk premium block."""
-    _section("VOLATILITY RISK PREMIUM  (implied move minus realized move)")
+    _section("MOVE COMPARISON  (supplied or retrospective proxy minus realized)")
     print(f"  Implied source              {result.implied_source}")
     print(f"  Events compared             {result.n_events}")
     print(THIN)
     print(f"  Mean VRP                    {result.mean_vrp * 100:+.2f} move points")
     print(f"  Median VRP                  {result.median_vrp * 100:+.2f} move points")
-    print(f"  Mean VRP ex-outliers        {result.mean_vrp_ex_outliers * 100:+.2f} "
-          f"move points  ({result.n_trimmed} trimmed)")
+    print(
+        f"  Mean VRP ex-outliers        {result.mean_vrp_ex_outliers * 100:+.2f} "
+        f"move points  ({result.n_trimmed} trimmed)"
+    )
     print(f"  Hit rate (implied > real)   {_fmt(result.hit_rate)}")
     print(f"  t-statistic vs zero         {result.t_stat:+.2f}")
     if result.proxy_note:
@@ -330,8 +472,10 @@ def _report_backtest(result, args: argparse.Namespace) -> None:
     if cfg.structure == "calendar":
         print(f"  Back leg expiry             T-{cfg.back_expiry_offset}")
     print(f"  IV source                   {result.trades.attrs.get('iv_source', 'n/a')}")
-    print(f"  Costs                       {cfg.transaction_cost_bps:.0f} bps/leg, "
-          f"{cfg.slippage_vol_points * 100:.1f} vol pts slippage")
+    print(
+        f"  Costs                       {cfg.transaction_cost_bps:.0f} bps/leg, "
+        f"{cfg.slippage_vol_points * 100:.1f} vol pts slippage"
+    )
     if result.n_skipped:
         print(f"  Events skipped              {result.n_skipped} (insufficient history)")
     print(THIN)
@@ -343,33 +487,26 @@ def _report_backtest(result, args: argparse.Namespace) -> None:
     print(f"  Std Dev per Event           {_fmt(s['std_return'])}")
     print(f"  Sharpe Ratio (annualized)   {_fmt(s['sharpe_ratio'], pct=False)}")
     print(f"  Profit Factor               {_fmt(s['profit_factor'], pct=False)}")
-    print(f"  Max Drawdown                {_fmt(s['max_drawdown'])}"
-          f"{'' if cfg.compound else '  (of starting capital)'}")
+    print(
+        f"  Max Drawdown                {_fmt(s['max_drawdown'])}"
+        f"{'' if cfg.compound else '  (of starting capital)'}"
+    )
     label = "Cumulative Return" if cfg.compound else "Sum of Returns   "
     print(f"  {label}           {_fmt(s['total_return'])}")
     print(f"  Best / Worst Trade          {_fmt(s['best_trade'])} / {_fmt(s['worst_trade'])}")
-    print(f"  Mean implied / realized     {_fmt(s['mean_implied_move'])} / "
-          f"{_fmt(s['mean_realized_move'])} move")
+    print(
+        f"  Mean implied / realized     {_fmt(s['mean_implied_move'])} / "
+        f"{_fmt(s['mean_realized_move'])} move"
+    )
 
-    supplied = result.trades.attrs.get("iv_source") == "supplied"
-    print(THIN)
-    if supplied:
-        print("  ! Priced off the IV you supplied. The edge shown is whatever that")
-        print("    level implies versus the moves that actually arrived.")
-    elif abs(cfg.implied_move_multiplier - 1.0) < 1e-9:
-        print("  ! k=1.0. Every event was priced at the move this name historically")
-        print("    delivers, so the expected edge is zero by construction. A positive")
-        print("    mean here is the skew of the move distribution (many events below")
-        print("    the mean, a few far above), not alpha. Read the win rate and the")
-        print("    worst trade together, because that shape is the whole risk of the trade.")
-    else:
-        print(f"  ! k={cfg.implied_move_multiplier:g}: this run ASSUMES the market prices the event move")
-        print(f"    at {cfg.implied_move_multiplier:g}x what actually arrives. The reported edge follows")
-        print("    from that assumption, it is not an independent finding.")
+    print("  Scenario estimates are not observed option quotes. P&L depends on")
+    print("  distribution, hedging, costs and expiry assumptions; k=1 does not")
+    print("  guarantee zero expected P&L. Premium-based returns are not margin returns.")
 
 
-def _make_plots(ticker: str, prices: pd.DataFrame, events: pd.DataFrame, vrp, bt,
-                args: argparse.Namespace) -> List[str]:
+def _make_plots(
+    ticker: str, prices: pd.DataFrame, events: pd.DataFrame, vrp, bt, args: argparse.Namespace
+) -> List[str]:
     """Render and save the chart set.
 
     Returns:
@@ -396,10 +533,13 @@ def _make_plots(ticker: str, prices: pd.DataFrame, events: pd.DataFrame, vrp, bt
     except VolDecomError as exc:
         logging.warning("Skipping vol cone, %s", exc)
 
-    jobs.append(("jump_distribution",
-                 lambda: plot_jump_distribution(events, backend=args.backend)))
-    jobs.append(("decomposition_timeline",
-                 lambda: plot_decomposition_timeline(events, backend=args.backend)))
+    jobs.append(("jump_distribution", lambda: plot_jump_distribution(events, backend=args.backend)))
+    jobs.append(
+        (
+            "decomposition_timeline",
+            lambda: plot_decomposition_timeline(events, backend=args.backend),
+        )
+    )
     if vrp is not None:
         jobs.append(("vrp_scatter", lambda: plot_vrp_scatter(vrp, backend=args.backend)))
     if bt is not None:
@@ -415,8 +555,7 @@ def _make_plots(ticker: str, prices: pd.DataFrame, events: pd.DataFrame, vrp, bt
     return written
 
 
-def _resolve_tickers(args: argparse.Namespace,
-                     parser: argparse.ArgumentParser) -> List[str]:
+def _resolve_tickers(args: argparse.Namespace, parser: argparse.ArgumentParser) -> List[str]:
     """Build the ticker list from ``--tickers`` and/or ``--universe-csv``.
 
     Symbols are upper-cased, stripped, and de-duplicated while preserving the
@@ -438,8 +577,10 @@ def _resolve_tickers(args: argparse.Namespace,
             parser.error(f"could not read --universe-csv {args.universe_csv}, {exc}")
             return []
         lowered = {str(c).strip().lower(): c for c in frame.columns}
-        column = next((lowered[c] for c in ("ticker", "symbol", "tickers")
-                       if c in lowered), frame.columns[0] if len(frame.columns) else None)
+        column = next(
+            (lowered[c] for c in ("ticker", "symbol", "tickers") if c in lowered),
+            frame.columns[0] if len(frame.columns) else None,
+        )
         if column is None:
             parser.error(f"--universe-csv {args.universe_csv} has no usable column")
             return []
@@ -457,10 +598,9 @@ def _resolve_tickers(args: argparse.Namespace,
     return out
 
 
-def analyze_ticker(ticker: str,
-                   args: argparse.Namespace,
-                   cfg: DecompositionConfig,
-                   verbose: bool = True) -> Dict[str, Any]:
+def analyze_ticker(
+    ticker: str, args: argparse.Namespace, cfg: DecompositionConfig, verbose: bool = True
+) -> Dict[str, Any]:
     """Run the full pipeline for one symbol.
 
     Args:
@@ -486,15 +626,28 @@ def analyze_ticker(ticker: str,
     if verbose:
         _section(f"{ticker}  |  earnings variance decomposition  |  vol_decom {__version__}")
 
-    prices = load_prices(
-        ticker, start=args.start, end=args.end, years=args.years,
-        cache_dir=args.cache_dir, force_refresh=args.no_cache,
-        raise_on_gaps=args.strict_gaps,
-    )
+    if args.prices_csv:
+        if not args.earnings_csv:
+            raise VolDecomError("--prices-csv requires --earnings-csv for an offline run.")
+        prices = validate_ohlcv(
+            pd.read_csv(args.prices_csv, index_col="Date", parse_dates=True), ticker=ticker
+        )
+    else:
+        prices = load_prices(
+            ticker,
+            start=args.start,
+            end=args.end,
+            years=args.years,
+            cache_dir=args.cache_dir,
+            force_refresh=args.no_cache,
+            raise_on_gaps=args.strict_gaps,
+        )
     if verbose:
         report = prices.attrs.get("gap_report")
-        print(f"  Prices     {len(prices)} sessions, "
-              f"{prices.index[0].date()} -> {prices.index[-1].date()}")
+        print(
+            f"  Prices     {len(prices)} sessions, "
+            f"{prices.index[0].date()} -> {prices.index[-1].date()}"
+        )
         if report is not None:
             print(f"  Continuity {report.describe()}")
 
@@ -503,13 +656,17 @@ def analyze_ticker(ticker: str,
         src = f"CSV {args.earnings_csv}"
     else:
         edates = load_earnings_dates(
-            ticker, limit=args.earnings_limit, cache_dir=args.cache_dir,
+            ticker,
+            limit=args.earnings_limit,
+            cache_dir=args.cache_dir,
             force_refresh=args.no_cache,
         )
         src = "yfinance"
     if verbose:
-        print(f"  Earnings   {len(edates)} announcement(s) from {src}, "
-              f"{edates[0].date()} -> {edates[-1].date()}")
+        print(
+            f"  Earnings   {len(edates)} announcement(s) from {src}, "
+            f"{edates[0].date()} -> {edates[-1].date()}"
+        )
 
     events = decompose_events(prices, edates, cfg)
     summary = summarize_decomposition(events)
@@ -520,7 +677,9 @@ def analyze_ticker(ticker: str,
     try:
         iv = args.implied_vol / 100.0 if args.implied_vol is not None else None
         vrp = volatility_risk_premium(
-            events, implied_vols=iv, days_to_expiry=args.iv_days,
+            events,
+            implied_vols=iv,
+            days_to_expiry=args.iv_days,
             trim_quantile=args.trim,
         )
         if verbose:
@@ -576,12 +735,17 @@ def analyze_ticker(ticker: str,
             else:
                 print("\nNo charts were written (see warnings above).")
 
-    return {"ticker": ticker, "prices": prices, "events": events,
-            "summary": summary, "vrp": vrp, "backtest": bt}
+    return {
+        "ticker": ticker,
+        "prices": prices,
+        "events": events,
+        "summary": summary,
+        "vrp": vrp,
+        "backtest": bt,
+    }
 
 
-def _cross_section(results: List[Dict[str, Any]],
-                   failures: List[Tuple[str, str]]) -> None:
+def _cross_section(results: List[Dict[str, Any]], failures: List[Tuple[str, str]]) -> None:
     """Print a one-row-per-ticker comparison of the whole run.
 
     This is the view that matters when the model is pointed at a universe
@@ -593,35 +757,39 @@ def _cross_section(results: List[Dict[str, Any]],
         results: Successful :func:`analyze_ticker` payloads.
         failures: ``(ticker, reason)`` for symbols that could not be processed.
     """
-    _section(f"CROSS-SECTION  ({len(results)} ticker(s) processed"
-             f"{f', {len(failures)} failed' if failures else ''})")
+    _section(
+        f"CROSS-SECTION  ({len(results)} ticker(s) processed"
+        f"{f', {len(failures)} failed' if failures else ''})"
+    )
 
     if results:
         rows = []
         for res in results:
             summary, bt = res["summary"], res["backtest"]
-            rows.append({
-                "Ticker": res["ticker"],
-                "Events": int(summary["n_events"]),
-                "Baseline": summary["mean_sigma_baseline"],
-                "Jump": summary["mean_sigma_jump"],
-                "Total": summary["mean_sigma_total"],
-                "VarRatio": summary["mean_variance_ratio"],
-                "MeanMove": summary["mean_abs_event_return"],
-                "Down%": summary["downside_share"],
-                "Clamp%": summary["clamp_rate"],
-                "WinRate": bt.stats["win_rate"] if bt else float("nan"),
-                "Sharpe": bt.stats["sharpe_ratio"] if bt else float("nan"),
-            })
+            rows.append(
+                {
+                    "Ticker": res["ticker"],
+                    "Events": int(summary["n_events"]),
+                    "Baseline": summary["mean_sigma_baseline"],
+                    "Jump": summary["mean_sigma_jump"],
+                    "Total": summary["mean_sigma_total"],
+                    "VarRatio": summary["mean_variance_ratio"],
+                    "MeanMove": summary["mean_abs_event_return"],
+                    "Down%": summary["downside_share"],
+                    "Clamp%": summary["clamp_rate"],
+                    "WinRate": bt.stats["win_rate"] if bt else float("nan"),
+                    "Sharpe": bt.stats["sharpe_ratio"] if bt else float("nan"),
+                }
+            )
         table = pd.DataFrame(rows).sort_values("VarRatio", ascending=False)
         formatted = table.copy()
         for col in ("Baseline", "Jump", "Total", "MeanMove", "Down%", "Clamp%", "WinRate"):
             formatted[col] = table[col].map(lambda v: "n/a" if pd.isna(v) else f"{v:.1%}")
         formatted["VarRatio"] = table["VarRatio"].map(lambda v: f"{v:.1f}x")
-        formatted["Sharpe"] = table["Sharpe"].map(
-            lambda v: "n/a" if pd.isna(v) else f"{v:+.2f}")
-        with pd.option_context("display.width", 200, "display.max_columns", 30,
-                               "display.max_rows", None):
+        formatted["Sharpe"] = table["Sharpe"].map(lambda v: "n/a" if pd.isna(v) else f"{v:+.2f}")
+        with pd.option_context(
+            "display.width", 200, "display.max_columns", 30, "display.max_rows", None
+        ):
             print(textwrap.indent(formatted.to_string(index=False), "  "))
         print("\n  Sorted by variance ratio, the share of event-window variance not")
         print("  explained by the diffusive baseline. Higher means more of this name's")

@@ -37,9 +37,10 @@ Notation used in the docstrings below, for session ``i`` of ``n``.
     u_i  = ln(H_i / O_i)
     d_i  = ln(L_i / O_i)
 """
+
 from __future__ import annotations
 
-from typing import Optional, Union
+from typing import Union
 
 import numpy as np
 import pandas as pd
@@ -66,9 +67,9 @@ TRADING_DAYS_PER_YEAR: int = 252
 _OHLC = ("Open", "High", "Low", "Close")
 
 
-def annualize(sigma_daily: Union[float, np.ndarray, pd.Series],
-              periods_per_year: int = TRADING_DAYS_PER_YEAR
-              ) -> Union[float, np.ndarray, pd.Series]:
+def annualize(
+    sigma_daily: Union[float, np.ndarray, pd.Series], periods_per_year: int = TRADING_DAYS_PER_YEAR
+) -> Union[float, np.ndarray, pd.Series]:
     """Scale a per-session volatility to an annual figure.
 
     Formula::
@@ -106,7 +107,8 @@ def _require_length(n: int, required: int, what: str) -> None:
     if n < required:
         raise InsufficientDataError(
             f"Not enough observations to compute {what}.",
-            required=required, available=n,
+            required=required,
+            available=n,
         )
 
 
@@ -143,9 +145,9 @@ def log_returns(close: pd.Series) -> pd.Series:
     return np.log(close).diff().dropna()
 
 
-def realized_variance(returns: Union[pd.Series, np.ndarray],
-                      zero_mean: bool = True,
-                      ddof: int = 0) -> float:
+def realized_variance(
+    returns: Union[pd.Series, np.ndarray], zero_mean: bool = True, ddof: int = 0
+) -> float:
     """Realized variance of a return sample, per session.
 
     Two conventions are supported.
@@ -181,16 +183,18 @@ def realized_variance(returns: Union[pd.Series, np.ndarray],
     arr = arr[~np.isnan(arr)]
     _require_length(arr.size, 1, "realized variance")
     if zero_mean:
-        return float(np.mean(arr ** 2))
+        return float(np.mean(arr**2))
     _require_length(arr.size, ddof + 1, f"demeaned variance with ddof={ddof}")
     return float(np.var(arr, ddof=ddof))
 
 
-def close_to_close(close: pd.Series,
-                   annualized: bool = True,
-                   zero_mean: bool = False,
-                   ddof: int = 1,
-                   periods_per_year: int = TRADING_DAYS_PER_YEAR) -> float:
+def close_to_close(
+    close: pd.Series,
+    annualized: bool = True,
+    zero_mean: bool = False,
+    ddof: int = 1,
+    periods_per_year: int = TRADING_DAYS_PER_YEAR,
+) -> float:
     """Close-to-close realized volatility.
 
     Formula (default, demeaned sample form)::
@@ -225,9 +229,9 @@ def close_to_close(close: pd.Series,
     return float(annualize(sigma, periods_per_year)) if annualized else sigma
 
 
-def parkinson(ohlc: pd.DataFrame,
-              annualized: bool = True,
-              periods_per_year: int = TRADING_DAYS_PER_YEAR) -> float:
+def parkinson(
+    ohlc: pd.DataFrame, annualized: bool = True, periods_per_year: int = TRADING_DAYS_PER_YEAR
+) -> float:
     """Parkinson (1980) high-low range volatility.
 
     Formula::
@@ -266,14 +270,14 @@ def parkinson(ohlc: pd.DataFrame,
     log_hl = np.log(high / low)
     log_hl = log_hl[~np.isnan(log_hl)]
     _require_length(log_hl.size, 1, "Parkinson volatility")
-    var = float(np.sum(log_hl ** 2) / (4.0 * log_hl.size * np.log(2.0)))
+    var = float(np.sum(log_hl**2) / (4.0 * log_hl.size * np.log(2.0)))
     sigma = float(np.sqrt(var))
     return float(annualize(sigma, periods_per_year)) if annualized else sigma
 
 
-def yang_zhang(ohlc: pd.DataFrame,
-               annualized: bool = True,
-               periods_per_year: int = TRADING_DAYS_PER_YEAR) -> float:
+def yang_zhang(
+    ohlc: pd.DataFrame, annualized: bool = True, periods_per_year: int = TRADING_DAYS_PER_YEAR
+) -> float:
     """Yang-Zhang (2000) drift-independent, gap-aware volatility.
 
     The estimator is a convex combination of an overnight term, an
@@ -353,13 +357,15 @@ def yang_zhang(ohlc: pd.DataFrame,
 # Rolling variants, fully vectorized, no Python-level loop over windows.
 # --------------------------------------------------------------------------- #
 
-def rolling_close_to_close(close: pd.Series,
-                           window: int,
-                           annualized: bool = True,
-                           zero_mean: bool = False,
-                           ddof: int = 1,
-                           periods_per_year: int = TRADING_DAYS_PER_YEAR
-                           ) -> pd.Series:
+
+def rolling_close_to_close(
+    close: pd.Series,
+    window: int,
+    annualized: bool = True,
+    zero_mean: bool = False,
+    ddof: int = 1,
+    periods_per_year: int = TRADING_DAYS_PER_YEAR,
+) -> pd.Series:
     """Rolling close-to-close volatility, dated on the last session of each window.
 
     Vectorized via :meth:`pandas.Series.rolling`, no per-window Python loop.
@@ -391,10 +397,12 @@ def rolling_close_to_close(close: pd.Series,
     return annualize(sigma, periods_per_year) if annualized else sigma
 
 
-def rolling_parkinson(ohlc: pd.DataFrame,
-                      window: int,
-                      annualized: bool = True,
-                      periods_per_year: int = TRADING_DAYS_PER_YEAR) -> pd.Series:
+def rolling_parkinson(
+    ohlc: pd.DataFrame,
+    window: int,
+    annualized: bool = True,
+    periods_per_year: int = TRADING_DAYS_PER_YEAR,
+) -> pd.Series:
     """Rolling Parkinson volatility, dated on the last session of each window.
 
     Formula per window, as in :func:`parkinson`::
@@ -423,10 +431,12 @@ def rolling_parkinson(ohlc: pd.DataFrame,
     return annualize(sigma, periods_per_year) if annualized else sigma
 
 
-def rolling_yang_zhang(ohlc: pd.DataFrame,
-                       window: int,
-                       annualized: bool = True,
-                       periods_per_year: int = TRADING_DAYS_PER_YEAR) -> pd.Series:
+def rolling_yang_zhang(
+    ohlc: pd.DataFrame,
+    window: int,
+    annualized: bool = True,
+    periods_per_year: int = TRADING_DAYS_PER_YEAR,
+) -> pd.Series:
     """Rolling Yang-Zhang volatility, dated on the last session of each window.
 
     Same decomposition as :func:`yang_zhang`, evaluated on every trailing

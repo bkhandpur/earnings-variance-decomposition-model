@@ -4,6 +4,7 @@ Every test runs against synthetic fixtures. Nothing here touches the network.
 Provider behavior is replaced with local test doubles where loader behavior
 is under test.
 """
+
 from __future__ import annotations
 
 import numpy as np
@@ -48,6 +49,7 @@ SQRT252 = np.sqrt(TRADING_DAYS_PER_YEAR)
 # Estimators
 # --------------------------------------------------------------------------- #
 
+
 class TestEstimators:
     """Estimator correctness against closed-form values."""
 
@@ -87,7 +89,7 @@ class TestEstimators:
         # Demeaned population variance of two identical values is exactly zero.
         assert realized_variance(r, zero_mean=False, ddof=0) == pytest.approx(0.0)
         # The zero-mean realized form correctly reports a large variance.
-        assert realized_variance(r, zero_mean=True) == pytest.approx(0.08 ** 2)
+        assert realized_variance(r, zero_mean=True) == pytest.approx(0.08**2)
 
     def test_realized_variance_rejects_empty(self):
         with pytest.raises(InsufficientDataError):
@@ -99,11 +101,16 @@ class TestEstimators:
         idx = pd.bdate_range("2020-01-01", periods=n)
         close = np.full(n, 100.0)
         rng_log = 0.02
-        df = pd.DataFrame({
-            "Open": close, "Close": close,
-            "High": close * np.exp(rng_log / 2), "Low": close * np.exp(-rng_log / 2),
-            "Volume": np.full(n, 1.0),
-        }, index=idx)
+        df = pd.DataFrame(
+            {
+                "Open": close,
+                "Close": close,
+                "High": close * np.exp(rng_log / 2),
+                "Low": close * np.exp(-rng_log / 2),
+                "Volume": np.full(n, 1.0),
+            },
+            index=idx,
+        )
         expected = rng_log / np.sqrt(4.0 * np.log(2.0))
         assert parkinson(df, annualized=False) == pytest.approx(expected)
 
@@ -118,14 +125,19 @@ class TestEstimators:
         """
         rng = np.random.default_rng(17)
         n = 300
-        gaps = rng.normal(0.0, 0.04, n)          # all the action is overnight
+        gaps = rng.normal(0.0, 0.04, n)  # all the action is overnight
         close = 100.0 * np.exp(np.cumsum(gaps))
         idx = pd.bdate_range("2020-01-01", periods=n)
-        df = pd.DataFrame({
-            "Open": close, "Close": close,        # open == close. No intraday move
-            "High": close * 1.0005, "Low": close * 0.9995,
-            "Volume": np.full(n, 1.0),
-        }, index=idx)
+        df = pd.DataFrame(
+            {
+                "Open": close,
+                "Close": close,  # open == close. No intraday move
+                "High": close * 1.0005,
+                "Low": close * 0.9995,
+                "Volume": np.full(n, 1.0),
+            },
+            index=idx,
+        )
         park = parkinson(df, annualized=False)
         yz = yang_zhang(df, annualized=False)
         assert park < 0.001, f"Parkinson should be blind to the gap, got {park}"
@@ -164,6 +176,7 @@ class TestEstimators:
 # --------------------------------------------------------------------------- #
 # Schema validation and gap handling
 # --------------------------------------------------------------------------- #
+
 
 class TestValidation:
     """The data contract. Nothing malformed may pass silently."""
@@ -271,6 +284,7 @@ class TestValidation:
 # Trading-day alignment
 # --------------------------------------------------------------------------- #
 
+
 class TestAlignment:
     """Alignment must be explicit, forward-rolling and calendar-free."""
 
@@ -289,8 +303,7 @@ class TestAlignment:
         prices = make_ohlcv(np.full(300, 0.005))
         rets = log_returns(prices["Close"])
         future = prices.index[-1] + pd.Timedelta(days=365)
-        align = align_events(pd.DatetimeIndex(rets.index),
-                             [prices.index[150], future])
+        align = align_events(pd.DatetimeIndex(rets.index), [prices.index[150], future])
         assert len(align) == 1
         assert future in align.dropped_future
 
@@ -298,8 +311,7 @@ class TestAlignment:
         prices = make_ohlcv(np.full(300, 0.005))
         rets = log_returns(prices["Close"])
         # Session 3 has no room for a 60-day baseline.
-        align = align_events(pd.DatetimeIndex(rets.index),
-                             [prices.index[3], prices.index[150]])
+        align = align_events(pd.DatetimeIndex(rets.index), [prices.index[3], prices.index[150]])
         assert len(align) == 1
         assert len(align.dropped_insufficient) == 1
         assert "pre-event" in align.dropped_insufficient[0][1]
@@ -319,8 +331,7 @@ class TestAlignment:
         rets = log_returns(prices["Close"])
         future = prices.index[-1] + pd.Timedelta(days=365)
         with pytest.raises(AlignmentError, match="strict"):
-            align_events(pd.DatetimeIndex(rets.index),
-                         [prices.index[150], future], strict=True)
+            align_events(pd.DatetimeIndex(rets.index), [prices.index[150], future], strict=True)
 
     def test_no_usable_events_raises(self):
         prices = make_ohlcv(np.full(300, 0.005))
@@ -358,6 +369,7 @@ class TestAlignment:
 # The decomposition, the core of the package
 # --------------------------------------------------------------------------- #
 
+
 class TestDecomposition:
     """sigma_jump = sqrt(max(0, sigma_total^2 - sigma_baseline^2))."""
 
@@ -380,7 +392,7 @@ class TestDecomposition:
         s_tot = events["sigma_total"].to_numpy()
         s_base = events["sigma_baseline"].to_numpy()
         s_jump = events["sigma_jump"].to_numpy()
-        expected = np.sqrt(np.clip(s_tot ** 2 - s_base ** 2, 0.0, None))
+        expected = np.sqrt(np.clip(s_tot**2 - s_base**2, 0.0, None))
         np.testing.assert_allclose(s_jump, expected, rtol=1e-12, atol=1e-15)
 
     def test_zero_jump_case_clamps_and_never_returns_nan(self, zero_jump_scenario):
@@ -432,16 +444,16 @@ class TestDecomposition:
     def test_range_estimator_baseline_runs(self, jump_scenario):
         prices, announce, _ = jump_scenario
         for est in ("parkinson", "yang_zhang"):
-            events = decompose_events(prices, announce,
-                                      DecompositionConfig(estimator=est))
+            events = decompose_events(prices, announce, DecompositionConfig(estimator=est))
             assert events["sigma_baseline"].notna().all()
             assert (events["sigma_baseline"] > 0).all()
 
     def test_range_estimator_requires_ohlc(self, jump_scenario):
         prices, announce, _ = jump_scenario
         with pytest.raises(SchemaValidationError, match="requires full OHLC"):
-            decompose_events(prices.drop(columns=["High"]), announce,
-                             DecompositionConfig(estimator="parkinson"))
+            decompose_events(
+                prices.drop(columns=["High"]), announce, DecompositionConfig(estimator="parkinson")
+            )
 
     def test_missing_close_column_raises(self, jump_scenario):
         prices, announce, _ = jump_scenario
@@ -538,6 +550,7 @@ class TestDecomposition:
 # Volatility risk premium
 # --------------------------------------------------------------------------- #
 
+
 class TestVRP:
     """The structural-edge metric and its honesty guarantees."""
 
@@ -564,7 +577,7 @@ class TestVRP:
         events = decompose_events(prices, announce)
         # Market charged 15% for a 12% realized move. A 3-point premium.
         result = volatility_risk_premium(events, implied_moves=0.15)
-        assert result.implied_source == "market"
+        assert result.implied_source == "constant_scenario"
         assert result.mean_vrp == pytest.approx(0.03, abs=0.005)
         assert result.hit_rate == 1.0
         assert not result.proxy_note
@@ -573,7 +586,7 @@ class TestVRP:
         prices, announce, _ = jump_scenario
         events = decompose_events(prices, announce)
         result = volatility_risk_premium(events, implied_vols=0.60, days_to_expiry=21)
-        assert result.implied_source == "market"
+        assert result.implied_source == "constant_iv_scenario"
         assert (result.per_event["implied_move"] > 0).all()
 
     def test_negative_premium_when_market_underprices(self, jump_scenario):
@@ -601,7 +614,7 @@ class TestVRP:
         assert 0.05 < move < 0.10
         # Explicit closed form.
         tau = 21 / 252
-        assert move == pytest.approx(np.sqrt((0.656 ** 2 - 0.597 ** 2) * tau))
+        assert move == pytest.approx(np.sqrt((0.656**2 - 0.597**2) * tau))
 
     def test_implied_jump_move_floors_at_zero(self):
         """IV below the diffusive baseline implies no priced event, not a NaN."""
@@ -615,6 +628,7 @@ class TestVRP:
 # --------------------------------------------------------------------------- #
 # Volatility cone
 # --------------------------------------------------------------------------- #
+
 
 class TestVolCone:
     def test_cone_quantiles_are_ordered(self, quiet_returns):
@@ -645,6 +659,7 @@ class TestVolCone:
 # Backtest
 # --------------------------------------------------------------------------- #
 
+
 class TestBacktest:
     """The delta-hedged vol-capture simulator."""
 
@@ -671,8 +686,7 @@ class TestBacktest:
         prices, announce, _ = jump_scenario
         events = decompose_events(prices, announce)
         result = run_backtest(prices, events)
-        for key in ("win_rate", "mean_return", "sharpe_ratio",
-                    "profit_factor", "max_drawdown"):
+        for key in ("win_rate", "mean_return", "sharpe_ratio", "profit_factor", "max_drawdown"):
             assert key in result.stats
         assert 0.0 <= result.stats["win_rate"] <= 1.0
         assert result.stats["max_drawdown"] <= 0.0
@@ -683,9 +697,9 @@ class TestBacktest:
         prices, announce, _ = jump_scenario
         events = decompose_events(prices, announce)
         rets = [
-            run_backtest(prices, events,
-                         BacktestConfig(implied_move_multiplier=k,
-                                        transaction_cost_bps=0.0)).stats["mean_return"]
+            run_backtest(
+                prices, events, BacktestConfig(implied_move_multiplier=k, transaction_cost_bps=0.0)
+            ).stats["mean_return"]
             for k in (0.9, 1.0, 1.2, 1.5)
         ]
         assert rets == sorted(rets)
@@ -694,9 +708,9 @@ class TestBacktest:
         """At k=1 the expected edge must be ~0, not a manufactured profit."""
         prices, announce, _ = jump_scenario
         events = decompose_events(prices, announce)
-        result = run_backtest(prices, events,
-                              BacktestConfig(implied_move_multiplier=1.0,
-                                             transaction_cost_bps=0.0))
+        result = run_backtest(
+            prices, events, BacktestConfig(implied_move_multiplier=1.0, transaction_cost_bps=0.0)
+        )
         assert abs(result.stats["mean_return"]) < 0.10
 
     def test_straddle_variance_to_move_conversion(self):
@@ -707,6 +721,7 @@ class TestBacktest:
         edge-free, so it is pinned here.
         """
         from vol_decom.backtest import SQRT_2_OVER_PI
+
         assert SQRT_2_OVER_PI == pytest.approx(0.7978845608)
         S, tau, target_move = 100.0, 8 / 252, 0.12
         var = (target_move / SQRT_2_OVER_PI) ** 2
@@ -720,16 +735,15 @@ class TestBacktest:
         free = run_backtest(prices, events, BacktestConfig(transaction_cost_bps=0.0))
         costly = run_backtest(prices, events, BacktestConfig(transaction_cost_bps=200.0))
         assert costly.stats["mean_return"] < free.stats["mean_return"]
-        slipped = run_backtest(prices, events,
-                               BacktestConfig(transaction_cost_bps=0.0,
-                                              slippage_vol_points=0.05))
+        slipped = run_backtest(
+            prices, events, BacktestConfig(transaction_cost_bps=0.0, slippage_vol_points=0.05)
+        )
         assert slipped.stats["mean_return"] < free.stats["mean_return"]
 
     def test_short_straddle_structure_has_no_back_leg(self, jump_scenario):
         prices, announce, _ = jump_scenario
         events = decompose_events(prices, announce)
-        result = run_backtest(prices, events,
-                              BacktestConfig(structure="short_straddle"))
+        result = run_backtest(prices, events, BacktestConfig(structure="short_straddle"))
         assert (result.trades["back_pnl"] == 0.0).all()
         assert (result.trades["back_premium"] == 0.0).all()
 
@@ -737,7 +751,7 @@ class TestBacktest:
         prices, announce, _ = jump_scenario
         events = decompose_events(prices, announce)
         result = run_backtest(prices, events, implied_vols=0.90)
-        assert result.trades.attrs["iv_source"] == "supplied"
+        assert result.trades.attrs["iv_source"] == "constant_iv_scenario"
         np.testing.assert_allclose(result.trades["front_iv"], 0.90)
 
     def test_supplied_implied_vol_respects_quote_term(self, jump_scenario):
@@ -745,12 +759,16 @@ class TestBacktest:
         events = decompose_events(prices, announce)
         default_term = run_backtest(prices, events, implied_vols=0.90)
         quoted_term = run_backtest(
-            prices, events, implied_vols=0.90, implied_vol_days=21,
+            prices,
+            events,
+            implied_vols=0.90,
+            implied_vol_days=21,
         )
 
-        assert quoted_term.trades["implied_event_move"].mean() > default_term.trades[
-            "implied_event_move"
-        ].mean()
+        assert (
+            quoted_term.trades["implied_event_move"].mean()
+            > default_term.trades["implied_event_move"].mean()
+        )
 
     def test_supplied_implied_vol_rejects_nonpositive_quote_term(self, jump_scenario):
         prices, announce, _ = jump_scenario
@@ -819,10 +837,10 @@ class TestBacktest:
             run_backtest(prices.drop(columns=["Close"]), events)
 
     def test_single_event_needs_supplied_iv(self, zero_jump_scenario):
-        """The leave-one-out benchmark is undefined for one event."""
+        """An expanding estimate cannot price an event without prior observations."""
         prices, announce = zero_jump_scenario
         events = decompose_events(prices, announce).iloc[:1]
-        with pytest.raises(BacktestError, match="leave-one-out"):
+        with pytest.raises(BacktestError, match="prior calibration history"):
             run_backtest(prices, events)
         # With a supplied IV it must run.
         result = run_backtest(prices, events, implied_vols=0.5)
@@ -843,8 +861,9 @@ class TestBacktest:
         def loop_count(fn) -> int:
             """Count `for`/`while` statements in a function's body, ignoring docstrings."""
             tree = ast.parse(textwrap.dedent(inspect.getsource(fn)))
-            return sum(isinstance(node, (ast.For, ast.While, ast.comprehension))
-                       for node in ast.walk(tree))
+            return sum(
+                isinstance(node, (ast.For, ast.While, ast.comprehension)) for node in ast.walk(tree)
+            )
 
         assert loop_count(bt_mod._hedged_leg_pnl) == 0
         assert loop_count(eng_mod._window_matrix) == 0
@@ -855,10 +874,12 @@ class TestBacktest:
 # Visualizer, figures must be returned, never shown
 # --------------------------------------------------------------------------- #
 
+
 class TestVisualizer:
     def test_figures_are_returned_not_shown(self, jump_scenario):
         pytest.importorskip("matplotlib")
         import matplotlib
+
         matplotlib.use("Agg")
         from vol_decom.visualizer import (
             plot_decomposition_timeline,
@@ -867,6 +888,7 @@ class TestVisualizer:
             plot_vol_cone,
             plot_vrp_scatter,
         )
+
         prices, announce, _ = jump_scenario
         events = decompose_events(prices, announce)
         vrp = volatility_risk_premium(events, implied_moves=0.15)
@@ -884,11 +906,13 @@ class TestVisualizer:
     def test_plot_rejects_empty_input(self):
         pytest.importorskip("matplotlib")
         from vol_decom.visualizer import plot_jump_distribution
+
         with pytest.raises(ValueError, match="non-empty"):
             plot_jump_distribution(pd.DataFrame())
 
     def test_plot_rejects_unknown_backend(self, jump_scenario):
         from vol_decom.visualizer import plot_jump_distribution
+
         prices, announce, _ = jump_scenario
         events = decompose_events(prices, announce)
         with pytest.raises(ValueError, match="backend"):
@@ -898,6 +922,7 @@ class TestVisualizer:
 # --------------------------------------------------------------------------- #
 # Generality across tickers, and the multi-symbol CLI plumbing
 # --------------------------------------------------------------------------- #
+
 
 class TestGenerality:
     """The model must work on any listed name, not just one worked example."""
@@ -917,13 +942,12 @@ class TestGenerality:
         The point of parameterizing this is that nothing in the estimator may
         be tuned to one name's volatility level.
         """
-        rng = np.random.default_rng(abs(hash(label)) % 2**31)
+        rng = np.random.default_rng(sum(ord(c) for c in label))
         n = 700
         rets = rng.normal(0.0, baseline_vol, n)
         pos = np.arange(120, n - 60, 63)
         rets[pos] = jump_size
-        prices = make_ohlcv(rets, intraday_range=baseline_vol / 2,
-                            seed=3, ticker=label)
+        prices = make_ohlcv(rets, intraday_range=baseline_vol / 2, seed=3, ticker=label)
         announce = pd.DatetimeIndex([prices.index[p] for p in pos])
 
         events = decompose_events(prices, announce)
@@ -950,6 +974,7 @@ class TestGenerality:
     def test_semiannual_reporter_infers_two_events_per_year(self):
         """events_per_year must come from the data, not a hardcoded 4."""
         from vol_decom.backtest import infer_events_per_year
+
         semi = pd.DatetimeIndex(pd.date_range("2019-01-15", periods=12, freq="182D"))
         quarterly = pd.DatetimeIndex(pd.date_range("2019-01-15", periods=20, freq="91D"))
         assert infer_events_per_year(semi) == pytest.approx(2.0, abs=0.15)
@@ -958,12 +983,14 @@ class TestGenerality:
     def test_infer_events_per_year_is_robust_to_a_long_gap(self):
         """A provider hole must not drag the inferred frequency down."""
         from vol_decom.backtest import infer_events_per_year
+
         dates = list(pd.date_range("2019-01-15", periods=8, freq="91D"))
         dates += list(pd.date_range("2024-01-15", periods=8, freq="91D"))
         assert infer_events_per_year(pd.DatetimeIndex(dates)) == pytest.approx(4.0, abs=0.3)
 
     def test_infer_events_per_year_falls_back_and_clamps(self):
         from vol_decom.backtest import infer_events_per_year
+
         assert infer_events_per_year(pd.DatetimeIndex(["2024-01-01"])) == 4.0
         weekly = pd.DatetimeIndex(pd.date_range("2024-01-01", periods=30, freq="7D"))
         assert infer_events_per_year(weekly) <= 12.0
@@ -991,22 +1018,26 @@ class TestCLI:
 
     def test_parser_accepts_a_single_ticker(self):
         import main as cli
+
         args = cli.build_parser().parse_args(["--ticker", "INTC"])
         assert args.tickers == ["INTC"]
 
     def test_parser_accepts_many_tickers(self):
         import main as cli
+
         args = cli.build_parser().parse_args(["-t", "INTC", "AAPL", "NVDA"])
         assert args.tickers == ["INTC", "AAPL", "NVDA"]
 
     def test_resolve_tickers_dedupes_and_uppercases(self):
         import main as cli
+
         parser = cli.build_parser()
         args = parser.parse_args(["-t", "intc", "AAPL", "Intc", " nvda "])
         assert cli._resolve_tickers(args, parser) == ["INTC", "AAPL", "NVDA"]
 
     def test_resolve_tickers_reads_a_universe_csv(self, tmp_path):
         import main as cli
+
         path = tmp_path / "universe.csv"
         path.write_text("ticker\nAAPL\nMSFT\nAAPL\n")
         parser = cli.build_parser()
@@ -1015,6 +1046,7 @@ class TestCLI:
 
     def test_resolve_tickers_merges_flags_and_csv(self, tmp_path):
         import main as cli
+
         path = tmp_path / "u.csv"
         path.write_text("symbol\nMSFT\n")
         parser = cli.build_parser()
@@ -1023,6 +1055,7 @@ class TestCLI:
 
     def test_no_ticker_is_a_usage_error(self):
         import main as cli
+
         parser = cli.build_parser()
         args = parser.parse_args([])
         with pytest.raises(SystemExit):
@@ -1030,6 +1063,7 @@ class TestCLI:
 
     def test_prototype_mode_builds_the_legacy_config(self):
         import main as cli
+
         args = cli.build_parser().parse_args(["-t", "NVDA", "--prototype-mode"])
         cfg = cli._build_decomposition_config(args)
         assert cfg.legacy_prototype_mode is True
@@ -1038,10 +1072,22 @@ class TestCLI:
 
     def test_config_is_built_from_flags(self):
         import main as cli
+
         args = cli.build_parser().parse_args(
-            ["-t", "INTC", "--baseline-windows", "30", "60",
-             "--estimator", "yang_zhang", "--event-window", "1",
-             "--baseline-gap", "3", "--no-annualize"]
+            [
+                "-t",
+                "INTC",
+                "--baseline-windows",
+                "30",
+                "60",
+                "--estimator",
+                "yang_zhang",
+                "--event-window",
+                "1",
+                "--baseline-gap",
+                "3",
+                "--no-annualize",
+            ]
         )
         cfg = cli._build_decomposition_config(args)
         assert cfg.baseline_windows == (30, 60)
@@ -1054,19 +1100,28 @@ class TestCLI:
     def test_cross_section_renders_without_a_backtest(self, jump_scenario, capsys):
         """The cross-section must tolerate tickers whose backtest was skipped."""
         import main as cli
+
         prices, announce, _ = jump_scenario
         events = decompose_events(prices, announce)
-        results = [{"ticker": "AAA", "prices": prices, "events": events,
-                    "summary": summarize_decomposition(events),
-                    "vrp": None, "backtest": None}]
+        results = [
+            {
+                "ticker": "AAA",
+                "prices": prices,
+                "events": events,
+                "summary": summarize_decomposition(events),
+                "vrp": None,
+                "backtest": None,
+            }
+        ]
         cli._cross_section(results, [("SPY", "no earnings calendar")])
         out = capsys.readouterr().out
         assert "AAA" in out
         assert "SPY" in out
-        assert "n/a" in out          # missing Sharpe rendered, not crashed
+        assert "n/a" in out  # missing Sharpe rendered, not crashed
 
     def test_cross_section_handles_an_all_failed_run(self, capsys):
         import main as cli
+
         cli._cross_section([], [("SPY", "no earnings"), ("QQQ", "no earnings")])
         out = capsys.readouterr().out
         assert "SPY" in out and "QQQ" in out

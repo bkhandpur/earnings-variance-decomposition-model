@@ -25,14 +25,15 @@ days.  What *does* need handling is an anomalous gap. A run of missing
 weekdays too long to be a holiday closure.  :func:`detect_gaps` surfaces
 those, and :func:`load_prices` can be configured to raise on them.
 """
+
 from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Iterable, List, Optional, Sequence, Tuple, Union
+from typing import List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 import pandas as pd
@@ -75,6 +76,7 @@ MAX_HOLIDAY_RUN_DAYS: int = 4
 # Validation
 # --------------------------------------------------------------------------- #
 
+
 @dataclass(frozen=True)
 class GapReport:
     """Description of the session-continuity of a price index.
@@ -86,6 +88,7 @@ class GapReport:
         first_session: First date in the index.
         last_session: Last date in the index.
     """
+
     gaps: Tuple[Tuple[pd.Timestamp, pd.Timestamp, int], ...]
     n_sessions: int
     first_session: Optional[pd.Timestamp]
@@ -104,11 +107,13 @@ class GapReport:
         return f"{self.n_sessions} sessions, {len(self.gaps)} gap(s), " + ", ".join(parts)
 
 
-def validate_ohlcv(df: pd.DataFrame,
-                   ticker: str = "<unknown>",
-                   required_columns: Sequence[str] = OHLCV_COLUMNS,
-                   allow_zero_volume: bool = True,
-                   min_rows: int = 2) -> pd.DataFrame:
+def validate_ohlcv(
+    df: pd.DataFrame,
+    ticker: str = "<unknown>",
+    required_columns: Sequence[str] = OHLCV_COLUMNS,
+    allow_zero_volume: bool = True,
+    min_rows: int = 2,
+) -> pd.DataFrame:
     """Validate and normalize an OHLCV frame.
 
     Checks performed, in order.
@@ -179,8 +184,7 @@ def validate_ohlcv(df: pd.DataFrame,
     if out.index.has_duplicates:
         dupes = out.index[out.index.duplicated()].unique()
         violations.append(
-            f"{len(dupes)} duplicated date(s), e.g. "
-            + ", ".join(str(d.date()) for d in dupes[:3])
+            f"{len(dupes)} duplicated date(s), e.g. " + ", ".join(str(d.date()) for d in dupes[:3])
         )
     if not out.index.is_monotonic_increasing:
         # Sortable problems are repaired, duplicates are not.
@@ -253,14 +257,14 @@ def validate_ohlcv(df: pd.DataFrame,
     if len(out) < min_rows:
         raise InsufficientDataError(
             f"{ticker}, too few valid sessions after validation.",
-            required=min_rows, available=len(out),
+            required=min_rows,
+            available=len(out),
         )
 
     return out
 
 
-def detect_gaps(index: pd.DatetimeIndex,
-                max_holiday_run: int = MAX_HOLIDAY_RUN_DAYS) -> GapReport:
+def detect_gaps(index: pd.DatetimeIndex, max_holiday_run: int = MAX_HOLIDAY_RUN_DAYS) -> GapReport:
     """Find runs of missing weekdays too long to be exchange holidays.
 
     Weekends are excluded by construction. The expected session grid is
@@ -316,8 +320,10 @@ def detect_gaps(index: pd.DatetimeIndex,
 # Caching
 # --------------------------------------------------------------------------- #
 
-def _cache_paths(cache_dir: Path, ticker: str, kind: str,
-                 suffix: str = "parquet") -> Tuple[Path, Path]:
+
+def _cache_paths(
+    cache_dir: Path, ticker: str, kind: str, suffix: str = "parquet"
+) -> Tuple[Path, Path]:
     """Return ``(data_path, meta_path)`` for a cache entry."""
     safe = "".join(ch if ch.isalnum() or ch in "-._" else "_" for ch in ticker.upper())
     base = cache_dir / f"{safe}__{kind}"
@@ -346,11 +352,13 @@ def _write_meta(meta_path: Path, payload: dict) -> None:
         raise CacheError(f"Could not write cache sidecar {meta_path}, {exc}") from exc
 
 
-def _cache_is_fresh(meta: Optional[dict],
-                    start: pd.Timestamp,
-                    end: pd.Timestamp,
-                    ttl_hours: float,
-                    auto_adjust: bool) -> bool:
+def _cache_is_fresh(
+    meta: Optional[dict],
+    start: pd.Timestamp,
+    end: pd.Timestamp,
+    ttl_hours: float,
+    auto_adjust: bool,
+) -> bool:
     """Decide whether a cache entry can serve a ``[start, end]`` request.
 
     The entry is usable when it covers the requested range and either the
@@ -383,8 +391,9 @@ def _cache_is_fresh(meta: Optional[dict],
     return age < timedelta(hours=ttl_hours)
 
 
-def clear_cache(cache_dir: Union[str, Path] = DEFAULT_CACHE_DIR,
-                ticker: Optional[str] = None) -> int:
+def clear_cache(
+    cache_dir: Union[str, Path] = DEFAULT_CACHE_DIR, ticker: Optional[str] = None
+) -> int:
     """Delete cache entries.
 
     Args:
@@ -417,6 +426,7 @@ def clear_cache(cache_dir: Union[str, Path] = DEFAULT_CACHE_DIR,
 # Loaders
 # --------------------------------------------------------------------------- #
 
+
 def _default_range(years: float) -> Tuple[pd.Timestamp, pd.Timestamp]:
     """Return ``(start, end)`` spanning the trailing ``years``."""
     end = pd.Timestamp.now().normalize()
@@ -424,16 +434,18 @@ def _default_range(years: float) -> Tuple[pd.Timestamp, pd.Timestamp]:
     return start, end
 
 
-def load_prices(ticker: str,
-                start: Optional[Union[str, pd.Timestamp]] = None,
-                end: Optional[Union[str, pd.Timestamp]] = None,
-                years: float = 7.0,
-                cache_dir: Union[str, Path] = DEFAULT_CACHE_DIR,
-                ttl_hours: float = 24.0,
-                force_refresh: bool = False,
-                raise_on_gaps: bool = False,
-                auto_adjust: bool = True,
-                min_rows: int = 60) -> pd.DataFrame:
+def load_prices(
+    ticker: str,
+    start: Optional[Union[str, pd.Timestamp]] = None,
+    end: Optional[Union[str, pd.Timestamp]] = None,
+    years: float = 7.0,
+    cache_dir: Union[str, Path] = DEFAULT_CACHE_DIR,
+    ttl_hours: float = 24.0,
+    force_refresh: bool = False,
+    raise_on_gaps: bool = False,
+    auto_adjust: bool = True,
+    min_rows: int = 60,
+) -> pd.DataFrame:
     """Load validated daily OHLCV bars, from cache when possible.
 
     Args:
@@ -494,15 +506,18 @@ def load_prices(ticker: str,
         try:
             cache_dir.mkdir(parents=True, exist_ok=True)
             raw.to_parquet(data_path)
-            _write_meta(meta_path, {
-                "ticker": ticker,
-                "kind": "prices",
-                "start": str(start_ts.date()),
-                "end": str(end_ts.date()),
-                "auto_adjust": auto_adjust,
-                "rows": int(len(raw)),
-                "fetched_at": datetime.now(timezone.utc).isoformat(),
-            })
+            _write_meta(
+                meta_path,
+                {
+                    "ticker": ticker,
+                    "kind": "prices",
+                    "start": str(start_ts.date()),
+                    "end": str(end_ts.date()),
+                    "auto_adjust": auto_adjust,
+                    "rows": int(len(raw)),
+                    "fetched_at": datetime.now(timezone.utc).isoformat(),
+                },
+            )
         except (OSError, ValueError) as exc:
             # A failed cache write must not fail the request.
             logger.warning("%s. Could not cache to %s (%s).", ticker, data_path, exc)
@@ -513,16 +528,18 @@ def load_prices(ticker: str,
         raise InsufficientDataError(
             f"{ticker}, too few sessions in the requested window "
             f"[{start_ts.date()}, {end_ts.date()}].",
-            required=min_rows, available=len(df),
+            required=min_rows,
+            available=len(df),
         )
 
     report = detect_gaps(df.index)
     if report.has_gaps:
         msg = f"{ticker}, price history has anomalous gaps, {report.describe()}"
         if raise_on_gaps:
-            raise SchemaValidationError(msg, violations=[
-                f"{a.date()}..{b.date()} ({n} weekdays)" for a, b, n in report.gaps
-            ])
+            raise SchemaValidationError(
+                msg,
+                violations=[f"{a.date()}..{b.date()} ({n} weekdays)" for a, b, n in report.gaps],
+            )
         logger.warning(msg)
 
     df.attrs["ticker"] = ticker
@@ -530,10 +547,9 @@ def load_prices(ticker: str,
     return df
 
 
-def _fetch_prices_yf(ticker: str,
-                     start: pd.Timestamp,
-                     end: pd.Timestamp,
-                     auto_adjust: bool = True) -> pd.DataFrame:
+def _fetch_prices_yf(
+    ticker: str, start: pd.Timestamp, end: pd.Timestamp, auto_adjust: bool = True
+) -> pd.DataFrame:
     """Fetch daily bars from yfinance.
 
     ``yfinance`` is imported lazily so that the rest of the package, and the
@@ -580,14 +596,15 @@ def _fetch_prices_yf(ticker: str,
     return df
 
 
-def load_earnings_dates(ticker: str,
-                        limit: int = 40,
-                        cache_dir: Union[str, Path] = DEFAULT_CACHE_DIR,
-                        ttl_hours: float = 24.0,
-                        force_refresh: bool = False,
-                        include_future: bool = False,
-                        asof: Optional[Union[str, pd.Timestamp]] = None
-                        ) -> pd.DatetimeIndex:
+def load_earnings_dates(
+    ticker: str,
+    limit: int = 40,
+    cache_dir: Union[str, Path] = DEFAULT_CACHE_DIR,
+    ttl_hours: float = 24.0,
+    force_refresh: bool = False,
+    include_future: bool = False,
+    asof: Optional[Union[str, pd.Timestamp]] = None,
+) -> pd.DatetimeIndex:
     """Load historical earnings announcement dates.
 
     The provider returns timestamped announcements, this function normalizes
@@ -649,13 +666,16 @@ def load_earnings_dates(ticker: str,
         try:
             cache_dir.mkdir(parents=True, exist_ok=True)
             raw.to_parquet(data_path)
-            _write_meta(meta_path, {
-                "ticker": ticker,
-                "kind": "earnings",
-                "limit": limit,
-                "rows": int(len(raw)),
-                "fetched_at": datetime.now(timezone.utc).isoformat(),
-            })
+            _write_meta(
+                meta_path,
+                {
+                    "ticker": ticker,
+                    "kind": "earnings",
+                    "limit": limit,
+                    "rows": int(len(raw)),
+                    "fetched_at": datetime.now(timezone.utc).isoformat(),
+                },
+            )
         except (OSError, ValueError) as exc:
             logger.warning("%s. Could not cache earnings dates (%s).", ticker, exc)
 
@@ -666,8 +686,9 @@ def load_earnings_dates(ticker: str,
     idx = pd.DatetimeIndex(idx).normalize().unique().sort_values()
 
     if not include_future:
-        cutoff = pd.Timestamp(asof).normalize() if asof is not None \
-            else pd.Timestamp.now().normalize()
+        cutoff = (
+            pd.Timestamp(asof).normalize() if asof is not None else pd.Timestamp.now().normalize()
+        )
         idx = idx[idx < cutoff]
 
     if len(idx) == 0:
@@ -726,15 +747,13 @@ def _fetch_earnings_yf(ticker: str, limit: int = 40) -> pd.DataFrame:
         raise DataFetchError(f"{ticker}, earnings-date request failed, {exc}") from exc
 
     if df is None or len(df) == 0:
-        raise MissingEarningsDatesError(
-            f"{ticker}, yfinance returned an empty earnings calendar."
-        )
+        raise MissingEarningsDatesError(f"{ticker}, yfinance returned an empty earnings calendar.")
     return df
 
 
-def load_earnings_dates_from_csv(path: Union[str, Path],
-                                 column: Optional[str] = None
-                                 ) -> pd.DatetimeIndex:
+def load_earnings_dates_from_csv(
+    path: Union[str, Path], column: Optional[str] = None
+) -> pd.DatetimeIndex:
     """Load announcement dates from a local CSV.
 
     Useful for two cases the provider handles badly. Symbols with no earnings
@@ -776,15 +795,12 @@ def load_earnings_dates_from_csv(path: Union[str, Path],
             column = df.columns[0]
     elif column not in df.columns:
         raise MissingEarningsDatesError(
-            f"Column '{column}' not in {path}. Available columns are "
-            f"{list(df.columns)}"
+            f"Column '{column}' not in {path}. Available columns are {list(df.columns)}"
         )
 
     parsed = pd.to_datetime(df[column], errors="coerce", utc=True)
     parsed = parsed.dropna()
     if parsed.empty:
-        raise MissingEarningsDatesError(
-            f"No parseable dates in column '{column}' of {path}."
-        )
+        raise MissingEarningsDatesError(f"No parseable dates in column '{column}' of {path}.")
     idx = pd.DatetimeIndex(parsed).tz_localize(None).normalize().unique().sort_values()
     return pd.DatetimeIndex(idx)

@@ -53,18 +53,18 @@ that one non-event session is always included, diluting the estimate, set
 ``announcement_offset=1`` with ``event_window=1`` if you know the names in
 your universe all report AMC.
 """
+
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field, replace
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple, Union
+from dataclasses import dataclass
+from typing import Dict, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 import pandas as pd
 
 from .estimators import (
     TRADING_DAYS_PER_YEAR,
-    annualize,
     log_returns,
     rolling_parkinson,
     rolling_yang_zhang,
@@ -130,6 +130,7 @@ class DecompositionConfig:
             regression checking only, it is known to zero out roughly half of
             all events. See the README.
     """
+
     baseline_windows: Tuple[int, ...] = (20, 30, 60)
     event_window: int = 2
     post_windows: Tuple[int, ...] = (5, 10)
@@ -159,9 +160,7 @@ class DecompositionConfig:
         if self.baseline_gap < 0:
             raise ValueError(f"baseline_gap must be >= 0, got {self.baseline_gap}")
         if self.announcement_offset < 0:
-            raise ValueError(
-                f"announcement_offset must be >= 0, got {self.announcement_offset}"
-            )
+            raise ValueError(f"announcement_offset must be >= 0, got {self.announcement_offset}")
         if self.estimator not in _BASELINE_ESTIMATORS:
             raise ValueError(
                 f"estimator must be one of {_BASELINE_ESTIMATORS}, got '{self.estimator}'"
@@ -223,6 +222,7 @@ class EventAlignment:
         dropped_duplicate: Announcements that collapsed onto a session
             already claimed by an earlier announcement.
     """
+
     positions: np.ndarray
     announcement_dates: pd.DatetimeIndex
     session_dates: pd.DatetimeIndex
@@ -243,10 +243,12 @@ class EventAlignment:
         )
 
 
-def align_events(return_index: pd.DatetimeIndex,
-                 announcement_dates: Union[pd.DatetimeIndex, Sequence],
-                 config: Optional[DecompositionConfig] = None,
-                 strict: bool = False) -> EventAlignment:
+def align_events(
+    return_index: pd.DatetimeIndex,
+    announcement_dates: Union[pd.DatetimeIndex, Sequence],
+    config: Optional[DecompositionConfig] = None,
+    strict: bool = False,
+) -> EventAlignment:
     """Map announcement dates onto positions in the return series.
 
     Alignment rule, matching the source prototype::
@@ -325,9 +327,11 @@ def align_events(return_index: pd.DatetimeIndex,
     too_late = pos_ok + fwd_need > n
 
     insufficient: List[Tuple[pd.Timestamp, str]] = []
-    for date, early, late in zip(ann_ok[too_early | too_late],
-                                 too_early[too_early | too_late],
-                                 too_late[too_early | too_late]):
+    for date, early, late in zip(
+        ann_ok[too_early | too_late],
+        too_early[too_early | too_late],
+        too_late[too_early | too_late],
+    ):
         # This loop runs only over *rejected* events (typically 0-4 of them)
         # purely to build human-readable diagnostics, it is not on the
         # estimation path.
@@ -373,10 +377,9 @@ def align_events(return_index: pd.DatetimeIndex,
     )
 
 
-def _window_matrix(values: np.ndarray,
-                   positions: np.ndarray,
-                   start_offset: int,
-                   length: int) -> np.ndarray:
+def _window_matrix(
+    values: np.ndarray, positions: np.ndarray, start_offset: int, length: int
+) -> np.ndarray:
     """Gather a ``(n_events, length)`` matrix of windowed values.
 
     Window ``i`` spans positions ``[p_i + start_offset, p_i + start_offset + length)``.
@@ -423,16 +426,17 @@ def _row_variance(mat: np.ndarray, zero_mean: bool, ddof: int) -> np.ndarray:
         Length-``n_events`` array of per-session variances.
     """
     if zero_mean:
-        return np.nanmean(mat ** 2, axis=1)
+        return np.nanmean(mat**2, axis=1)
     if mat.shape[1] <= ddof:
         return np.full(mat.shape[0], np.nan)
     return np.nanvar(mat, axis=1, ddof=ddof)
 
 
-def decompose_events(prices: pd.DataFrame,
-                     earnings_dates: Union[pd.DatetimeIndex, Sequence],
-                     config: Optional[DecompositionConfig] = None
-                     ) -> pd.DataFrame:
+def decompose_events(
+    prices: pd.DataFrame,
+    earnings_dates: Union[pd.DatetimeIndex, Sequence],
+    config: Optional[DecompositionConfig] = None,
+) -> pd.DataFrame:
     """Decompose realized variance into diffusive and jump components per event.
 
     For each aligned event this computes.
@@ -497,13 +501,16 @@ def decompose_events(prices: pd.DataFrame,
     r = rets.to_numpy(dtype=float)
     ret_index = pd.DatetimeIndex(rets.index)
 
-    need = cfg.baseline_gap + max(cfg.baseline_windows) + max(
-        cfg.event_window, 1 + max(cfg.post_windows)
+    need = (
+        cfg.baseline_gap
+        + max(cfg.baseline_windows)
+        + max(cfg.event_window, 1 + max(cfg.post_windows))
     )
     if r.size < need:
         raise InsufficientDataError(
             "Price history is shorter than the configured windows require.",
-            required=need + 1, available=r.size + 1,
+            required=need + 1,
+            available=r.size + 1,
         )
 
     align = align_events(ret_index, earnings_dates, config=cfg)
@@ -539,7 +546,7 @@ def decompose_events(prices: pd.DataFrame,
             vals = series.to_numpy(dtype=float)
             take = pos - cfg.baseline_gap
             sigma_w = vals[take]
-            baseline_vars[w] = sigma_w ** 2
+            baseline_vars[w] = sigma_w**2
 
     primary = cfg.primary_baseline
     var_baseline = baseline_vars[primary]
@@ -574,6 +581,7 @@ def decompose_events(prices: pd.DataFrame,
     # --- per-event descriptors
     out["event_return"] = event_return
     out["abs_event_return"] = np.abs(event_return)
+    out["event_window_log_return"] = event_mat.sum(axis=1)
 
     df = pd.DataFrame(out, index=align.session_dates)
     df.index.name = "session_date"
@@ -628,11 +636,12 @@ def summarize_decomposition(events: pd.DataFrame) -> Dict[str, float]:
     return summary
 
 
-def implied_jump_move(implied_vol: Union[float, np.ndarray, pd.Series],
-                      baseline_vol: Union[float, np.ndarray, pd.Series],
-                      days_to_expiry: int,
-                      periods_per_year: int = TRADING_DAYS_PER_YEAR
-                      ) -> Union[float, np.ndarray, pd.Series]:
+def implied_jump_move(
+    implied_vol: Union[float, np.ndarray, pd.Series],
+    baseline_vol: Union[float, np.ndarray, pd.Series],
+    days_to_expiry: int,
+    periods_per_year: int = TRADING_DAYS_PER_YEAR,
+) -> Union[float, np.ndarray, pd.Series]:
     """Back out the market-implied one-off earnings move from a term IV.
 
     This is the calculation in the source research, stated explicitly. An
@@ -677,7 +686,7 @@ def implied_jump_move(implied_vol: Union[float, np.ndarray, pd.Series],
     tau = float(days_to_expiry) / float(periods_per_year)
     iv = np.asarray(implied_vol, dtype=float)
     bv = np.asarray(baseline_vol, dtype=float)
-    var_jump = (iv ** 2 - bv ** 2) * tau
+    var_jump = (iv**2 - bv**2) * tau
     move = np.sqrt(np.clip(var_jump, 0.0, None))
 
     if isinstance(implied_vol, pd.Series):
@@ -713,6 +722,7 @@ class VRPResult:
             real IV was supplied, ``"historical_proxy"`` otherwise.
         proxy_note: Explanation when a proxy was used.
     """
+
     per_event: pd.DataFrame
     mean_vrp: float
     median_vrp: float
@@ -738,12 +748,14 @@ class VRPResult:
         }
 
 
-def volatility_risk_premium(events: pd.DataFrame,
-                            implied_moves: Optional[Union[pd.Series, float]] = None,
-                            implied_vols: Optional[Union[pd.Series, float]] = None,
-                            days_to_expiry: int = 21,
-                            trim_quantile: float = 0.05,
-                            min_events: int = 4) -> VRPResult:
+def volatility_risk_premium(
+    events: pd.DataFrame,
+    implied_moves: Optional[Union[pd.Series, float]] = None,
+    implied_vols: Optional[Union[pd.Series, float]] = None,
+    days_to_expiry: int = 21,
+    trim_quantile: float = 0.05,
+    min_events: int = 4,
+) -> VRPResult:
     """Quantify the structural IV edge across a set of historical events.
 
     The metric is the **volatility risk premium** in move points::
@@ -775,7 +787,7 @@ def volatility_risk_premium(events: pd.DataFrame,
        Leave-one-out matters. Including event ``i`` in its own benchmark would
        shrink every deviation toward zero and bias the premium. What this mode
        actually measures is **event-move dispersion around the historical
-       norm**, not a true risk premium. It answers "was this event bigger or
+       norm**, not a true risk premium. It is retrospective and includes future events. It answers "was this event bigger or
        smaller than this name typically delivers?" and its mean is zero by
        construction. Treat it as a distributional diagnostic and a
        calibration check on the backtest, never as evidence of an edge. Only
@@ -823,7 +835,7 @@ def volatility_risk_premium(events: pd.DataFrame,
             implied = pd.Series(float(implied_moves), index=events.index)
         else:
             implied = pd.Series(implied_moves).reindex(events.index).astype(float)
-        source = "market"
+        source = "constant_scenario" if np.isscalar(implied_moves) else "supplied_moves"
     elif implied_vols is not None:
         if np.isscalar(implied_vols):
             iv = pd.Series(float(implied_vols), index=events.index)
@@ -837,7 +849,7 @@ def volatility_risk_premium(events: pd.DataFrame,
             implied_jump_move(iv.to_numpy(), baseline.to_numpy(), days_to_expiry),
             index=events.index,
         )
-        source = "market"
+        source = "constant_iv_scenario" if np.isscalar(implied_vols) else "supplied_iv"
     else:
         # Leave-one-out historical mean, (sum - self) / (n - 1), vectorized.
         total = realized.sum()
@@ -862,12 +874,14 @@ def volatility_risk_premium(events: pd.DataFrame,
     realized_v = realized[valid]
     vrp = implied - realized_v
 
-    per_event = pd.DataFrame({
-        "implied_move": implied,
-        "realized_move": realized_v,
-        "vrp": vrp,
-        "vrp_ratio": np.where(realized_v > 0, implied / realized_v, np.nan),
-    })
+    per_event = pd.DataFrame(
+        {
+            "implied_move": implied,
+            "realized_move": realized_v,
+            "vrp": vrp,
+            "vrp_ratio": np.where(realized_v > 0, implied / realized_v, np.nan),
+        }
+    )
     per_event["implied_source"] = source
 
     # Trimmed mean, for the "excluding outliers" figure.
@@ -897,11 +911,13 @@ def volatility_risk_premium(events: pd.DataFrame,
     )
 
 
-def vol_cone(prices: pd.DataFrame,
-             windows: Sequence[int] = (5, 10, 20, 30, 60, 90, 120),
-             quantiles: Sequence[float] = (0.05, 0.25, 0.50, 0.75, 0.95),
-             estimator: str = "close_to_close",
-             annualized: bool = True) -> pd.DataFrame:
+def vol_cone(
+    prices: pd.DataFrame,
+    windows: Sequence[int] = (5, 10, 20, 30, 60, 90, 120),
+    quantiles: Sequence[float] = (0.05, 0.25, 0.50, 0.75, 0.95),
+    estimator: str = "close_to_close",
+    annualized: bool = True,
+) -> pd.DataFrame:
     """Build a volatility cone. The distribution of realized vol by horizon.
 
     For each window length, the full history of trailing realized vol is
@@ -943,7 +959,8 @@ def vol_cone(prices: pd.DataFrame,
     if not usable:
         raise InsufficientDataError(
             "Price history is too short for any requested cone window.",
-            required=min(windows) + 2, available=len(prices),
+            required=min(windows) + 2,
+            available=len(prices),
         )
 
     for w in usable:
@@ -964,7 +981,8 @@ def vol_cone(prices: pd.DataFrame,
     if not rows:
         raise InsufficientDataError(
             "No cone window produced a usable observation.",
-            required=min(usable) + 2, available=len(prices),
+            required=min(usable) + 2,
+            available=len(prices),
         )
 
     out = pd.DataFrame.from_dict(rows, orient="index").sort_index()

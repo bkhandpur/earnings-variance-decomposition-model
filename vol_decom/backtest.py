@@ -20,8 +20,7 @@ exactly::
 
 summed over the holding period. The first bracket is the change in the option's
 mark, the second is the P&L of the hedge that was on. What remains after the
-hedge is stripped out is pure volatility exposure, the position makes money
-if and only if the underlying delivers more variance than its mark implied.
+hedge is stripped out is volatility-sensitive P&L; discrete hedging and the move distribution also matter.
 
 Revaluation rather than the gamma approximation. The textbook shortcut for a
 delta-hedged position is the dollar-gamma form
@@ -51,56 +50,29 @@ toward the diffusive level. That collapse is the short leg's profit, and it is
 the mechanism the source research is trading. The long leg of the calendar
 expires before the announcement and so never carries a jump loading at all.
 
-The implied-volatility input, and why the default is deliberately edge-free
---------------------------------------------------------------------------
-Free data does not retain historical option surfaces, so the level the trade is
-sold at has to come from somewhere. Rather than invent a favourable one, the
-default construction prices each event at exactly the move this name
-historically delivers::
-
-    implied_move_i = k * mean_{j != i} |realized_move_j|
-
-with ``k = implied_move_multiplier``, default **1.0**, and the benchmark taken
-leave-one-out so no event is priced using its own outcome. At ``k = 1.0`` the
-expected P&L is zero by construction. The position collects the average move
-and pays the actual one. What the backtest measures there is the *dispersion*
-of outcomes, the risk profile of the structure, not its profitability.
-
-There is a subtlety worth stating, because it is a genuine trap. Options are
-quoted in variance, but a delta-hedged short straddle pays out the *absolute*
-move. An at-the-money straddle marked at variance ``V`` is worth
-``sqrt(2/pi) * sqrt(V) * S``, about 0.798 times the root-variance, because
-Black-Scholes assumes a Gaussian move whose mean absolute size is
-``sqrt(2/pi)`` of its standard deviation. An earnings jump is not Gaussian --
-it is closer to a two-point ``+/-m`` distribution, whose mean absolute size
-equals its standard deviation exactly. So a mark that is *variance*-fair for a
-jump is roughly 20% short of being *P&L*-fair, and a short position calibrated
-on variance alone bleeds at a rate that has nothing to do with mispricing. This
-module therefore calibrates on the move and converts::
-
-    V_jump = ( implied_move / sqrt(2/pi) )^2
-
-which is the variance that makes the straddle's event component worth
-``implied_move``. That is what makes ``k = 1.0`` genuinely edge-free.
-
-To test a thesis about mispricing, set ``k`` from real data. Either supply
-``implied_vols`` from a surface, or raise ``k`` to reflect a measured premium
-(the source research measured 2.37 move points, ~2.78 excluding COVID-era
-events). Any positive mean return at ``k > 1`` is a direct consequence of that
-input assumption and must be reported as such. This is the single most
-important caveat in the package. The backtest cannot discover a volatility
-risk premium, it can only propagate one you supply.
+Entry information and calibration
+---------------------------------
+Positions open just after the entry session close. Baseline volatility uses a
+trailing window ending at that close, never the retrospective event baseline.
+The default event loading uses only completed event windows available by entry,
+with at least two prior observations. Warm-up trades are skipped. This expanding
+historical absolute-move estimate is a scenario input, not observed market IV.
+Its Gaussian straddle conversion is approximate and does not imply zero expected
+P&L. Discrete hedging, costs, expiry and distributional assumptions matter.
+Per-event IV Series require observation timestamps no later than entry; scalar
+IV is explicitly a constant scenario assumption.
 """
+
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
-from typing import Dict, Optional, Sequence, Tuple, Union
+from dataclasses import dataclass
+from typing import Dict, Optional, Tuple, Union
 
 import numpy as np
 import pandas as pd
 
-from .estimators import TRADING_DAYS_PER_YEAR
+from .estimators import TRADING_DAYS_PER_YEAR, rolling_parkinson, rolling_yang_zhang
 from .exceptions import BacktestError, InsufficientDataError, SchemaValidationError
 
 __all__ = [
@@ -142,18 +114,22 @@ def _norm_cdf(x: np.ndarray) -> np.ndarray:
     x = np.asarray(x, dtype=float)
     try:
         from scipy.special import ndtr
+
         return ndtr(x)
     except ImportError:  # pragma. No cover - environment dependent
         from math import erf
+
         vec = np.vectorize(lambda v: 0.5 * (1.0 + erf(v / np.sqrt(2.0))), otypes=[float])
         return vec(x)
 
 
-def bs_straddle(spot: Union[float, np.ndarray],
-                strike: Union[float, np.ndarray],
-                vol: Union[float, np.ndarray],
-                tau: Union[float, np.ndarray],
-                rate: float = 0.0) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+def bs_straddle(
+    spot: Union[float, np.ndarray],
+    strike: Union[float, np.ndarray],
+    vol: Union[float, np.ndarray],
+    tau: Union[float, np.ndarray],
+    rate: float = 0.0,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Black-Scholes price, delta and gamma of a straddle (one call + one put).
 
     Formulas, for spot ``S``, strike ``K``, vol ``sigma``, time ``tau`` in
@@ -200,7 +176,7 @@ def bs_straddle(spot: Union[float, np.ndarray],
         raise ValueError("bs_straddle requires strictly positive volatility.")
 
     sqrt_t = np.sqrt(t)
-    d1 = (np.log(S / K) + (rate + 0.5 * sig ** 2) * t) / (sig * sqrt_t)
+    d1 = (np.log(S / K) + (rate + 0.5 * sig**2) * t) / (sig * sqrt_t)
     d2 = d1 - sig * sqrt_t
     disc = np.exp(-rate * t)
 
@@ -239,7 +215,7 @@ class BacktestConfig:
             the structure an event-isolating calendar rather than a hedge.
         implied_move_multiplier: ``k`` in the front-leg pricing. The event is
             marked at ``k`` times the move this name historically delivers, so
-            1.0 (default) is edge-free by construction and ``k = 1.10`` asserts
+            1.0 (default) is a historical scenario assumption and ``k = 1.10`` asserts
             the market charges 10% more than the move that arrives. See the
             module docstring for the variance-to-move conversion this uses.
         back_iv_multiplier: Multiple of the baseline vol at which the long leg
@@ -275,11 +251,13 @@ class BacktestConfig:
             any history with gaps. Set a float to override.
         periods_per_year: Sessions per year.
     """
+
     structure: str = "calendar"
     entry_offset: int = 5
     exit_offset: int = 1
     front_expiry_offset: int = 3
     back_expiry_offset: int = 3
+    min_history_events: int = 2
     implied_move_multiplier: float = 1.0
     back_iv_multiplier: float = 1.0
     hedge_band: float = 0.0
@@ -297,10 +275,21 @@ class BacktestConfig:
         Raises:
             BacktestError: On any inconsistent or out-of-range parameter.
         """
+        numeric = (
+            self.implied_move_multiplier,
+            self.back_iv_multiplier,
+            self.transaction_cost_bps,
+            self.slippage_vol_points,
+            self.rate,
+        )
+        if not all(np.isfinite(x) for x in numeric):
+            raise BacktestError("Configuration values must be finite.")
+        if self.min_history_events < 1 or self.periods_per_year < 1:
+            raise BacktestError("min_history_events and periods_per_year must be positive.")
+        if self.hedge_band != 0:
+            raise BacktestError("Only daily closing hedges (hedge_band=0) are supported.")
         if self.structure not in _STRUCTURES:
-            raise BacktestError(
-                f"structure must be one of {_STRUCTURES}, got '{self.structure}'"
-            )
+            raise BacktestError(f"structure must be one of {_STRUCTURES}, got '{self.structure}'")
         if self.entry_offset < 1:
             raise BacktestError(f"entry_offset must be >= 1, got {self.entry_offset}")
         if self.exit_offset < 0:
@@ -327,18 +316,14 @@ class BacktestConfig:
                 f"implied_move_multiplier must be > 0, got {self.implied_move_multiplier}"
             )
         if self.back_iv_multiplier <= 0:
-            raise BacktestError(
-                f"back_iv_multiplier must be > 0, got {self.back_iv_multiplier}"
-            )
+            raise BacktestError(f"back_iv_multiplier must be > 0, got {self.back_iv_multiplier}")
         valid_bases = ("front_premium", "net_credit", "notional")
         if self.capital_basis not in valid_bases:
             raise BacktestError(
                 f"capital_basis must be one of {valid_bases}, got '{self.capital_basis}'"
             )
         if self.events_per_year is not None and self.events_per_year <= 0:
-            raise BacktestError(
-                f"events_per_year must be > 0 or None, got {self.events_per_year}"
-            )
+            raise BacktestError(f"events_per_year must be > 0 or None, got {self.events_per_year}")
         if self.transaction_cost_bps < 0:
             raise BacktestError("transaction_cost_bps must be >= 0.")
         if self.slippage_vol_points < 0:
@@ -362,6 +347,7 @@ class BacktestResult:
         config: The configuration used.
         n_skipped: Events dropped for insufficient surrounding history.
     """
+
     trades: pd.DataFrame
     equity_curve: pd.Series
     stats: Dict[str, float]
@@ -387,8 +373,7 @@ class BacktestResult:
         return pd.DataFrame(rows, columns=["Metric", "Value"])
 
 
-def infer_events_per_year(event_dates: pd.DatetimeIndex,
-                          default: float = 4.0) -> float:
+def infer_events_per_year(event_dates: pd.DatetimeIndex, default: float = 4.0) -> float:
     """Infer the reporting frequency from the observed spacing of events.
 
     Uses the **median** calendar gap between consecutive announcements, which
@@ -453,15 +438,17 @@ def _max_drawdown(equity: np.ndarray, compound: bool) -> float:
     return float(np.min(path - peak))
 
 
-def _hedged_leg_pnl(spot_grid: np.ndarray,
-                    spot_pp_grid: np.ndarray,
-                    strike: np.ndarray,
-                    expiry_pp: np.ndarray,
-                    baseline: np.ndarray,
-                    jump_var: np.ndarray,
-                    jump_remaining: np.ndarray,
-                    rate: float,
-                    dt: float) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+def _hedged_leg_pnl(
+    spot_grid: np.ndarray,
+    spot_pp_grid: np.ndarray,
+    strike: np.ndarray,
+    expiry_pp: np.ndarray,
+    baseline: np.ndarray,
+    jump_var: np.ndarray,
+    jump_remaining: np.ndarray,
+    rate: float,
+    dt: float,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Delta-hedged P&L of a **long** straddle leg, by full revaluation.
 
     For each event, over each session step ``t``::
@@ -504,7 +491,7 @@ def _hedged_leg_pnl(spot_grid: np.ndarray,
     # Guard the division for expired points, their values are overwritten below.
     safe_tau = np.where(alive, tau, 1.0)
 
-    remaining_var = (baseline ** 2) * safe_tau + jump_var * jump_remaining
+    remaining_var = (baseline**2) * safe_tau + jump_var * jump_remaining
     sigma = np.sqrt(np.clip(remaining_var / safe_tau, 1e-12, None))
 
     value, delta, _ = bs_straddle(spot_grid, strike, sigma, safe_tau, rate=rate)
@@ -520,12 +507,14 @@ def _hedged_leg_pnl(spot_grid: np.ndarray,
     return pnl, value[:, 0], sigma[:, 0]
 
 
-def run_backtest(prices: pd.DataFrame,
-                 events: pd.DataFrame,
-                 config: Optional[BacktestConfig] = None,
-                 implied_vols: Optional[Union[pd.Series, float]] = None,
-                 implied_vol_days: Optional[int] = None,
-                 ) -> BacktestResult:
+def run_backtest(
+    prices: pd.DataFrame,
+    events: pd.DataFrame,
+    config: Optional[BacktestConfig] = None,
+    implied_vols: Optional[Union[pd.Series, float]] = None,
+    implied_vol_days: Optional[int] = None,
+    implied_observed_at: Optional[pd.Series] = None,
+) -> BacktestResult:
     """Simulate the delta-neutral earnings vol trade across an event history.
 
     Mechanics per event, all offsets in trading sessions from the event session.
@@ -542,10 +531,9 @@ def run_backtest(prices: pd.DataFrame,
     Returns are expressed as a fraction of the entry capital basis, net of
     ``transaction_cost_bps`` and ``slippage_vol_points``.
 
-    The implementation is fully vectorized over events. Spot, time-to-expiry
+    Option revaluation is vectorized over events. Spot, time-to-expiry
     and expiry masks are built as ``(n_events, n_steps)`` matrices and reduced
-    in one pass. The only Python-level loop is over the (at most two) legs of
-    the structure, which is a loop over strategy definition, not over data.
+    in one pass. Entry estimates use trailing session windows and completed historical events.
 
     Args:
         prices: Validated OHLCV frame, the same one passed to
@@ -553,9 +541,10 @@ def run_backtest(prices: pd.DataFrame,
         events: Output of :func:`vol_decom.engine.decompose_events`.
         config: Backtest configuration.
         implied_vols: Optional per-event annualized ATM IV for the front leg,
-            as decimals. Supplying real surface data here is what turns this
-            from a risk simulation into an edge measurement. A scalar is
-            broadcast to all events.
+            as decimals. Series require observation timestamps in implied_observed_at. A scalar
+            is a constant scenario assumption, broadcast to all events.
+        implied_observed_at: Per-event IV observation timestamps, timezone-aware
+            or interpreted as UTC; must be no later than 16:00 New York at entry.
         implied_vol_days: Trading days to expiry for ``implied_vols``. When
             omitted, the quote is assumed to match the front option's term.
 
@@ -583,27 +572,80 @@ def run_backtest(prices: pd.DataFrame,
         if col not in events.columns:
             raise SchemaValidationError(f"events frame is missing required column '{col}'.")
 
+    if (
+        not isinstance(prices.index, pd.DatetimeIndex)
+        or prices.index.has_duplicates
+        or not prices.index.is_monotonic_increasing
+    ):
+        raise SchemaValidationError("Prices require unique, increasing session dates.")
+    if not events.index.is_unique:
+        raise SchemaValidationError("Events require unique session dates.")
+    events = events.sort_index()
     close = prices["Close"].to_numpy(dtype=float)
+    if np.any(~np.isfinite(close)) or np.any(close <= 0):
+        raise SchemaValidationError("Close prices must be finite and positive.")
     log_rets = np.diff(np.log(close))  # log_rets[j] moves price position j -> j+1
     n_prices = close.size
     if n_prices < cfg.holding_sessions + 2:
         raise InsufficientDataError(
             "Price history is shorter than one holding period.",
-            required=cfg.holding_sessions + 2, available=n_prices,
+            required=cfg.holding_sessions + 2,
+            available=n_prices,
         )
 
     # Event session in *price* index positions. Returns index j <-> price index j+1.
-    event_pp = events["return_position"].to_numpy(dtype=int) + 1
+    raw_positions = events["return_position"].to_numpy(dtype=float)
+    if np.any(~np.isfinite(raw_positions)) or np.any(raw_positions != np.floor(raw_positions)):
+        raise SchemaValidationError("Event positions must be finite integers.")
+    event_pp = raw_positions.astype(int) + 1
+    if (
+        np.any(event_pp < 1)
+        or np.any(event_pp >= n_prices)
+        or len(np.unique(event_pp)) != len(event_pp)
+    ):
+        raise SchemaValidationError("Event positions must be unique and inside price history.")
+
+    # All candidate entry inputs are built before filtering. Prior observations
+    # may calibrate later trades even when their own trade was not simulated.
+    ev_cfg = events.attrs.get("config")
+    window = int(getattr(ev_cfg, "primary_baseline", 20))
+    event_window = int(getattr(ev_cfg, "event_window", 2))
+    entry_all = event_pp - cfg.entry_offset
+    estimator = getattr(ev_cfg, "estimator", "close_to_close")
+    if estimator == "close_to_close":
+        zero_mean = getattr(ev_cfg, "effective_zero_mean", True)
+        ddof = getattr(ev_cfg, "effective_ddof", 1)
+        baseline_all = np.full(len(events), np.nan)
+        for i, entry in enumerate(entry_all):
+            if entry >= window:
+                history = log_rets[entry - window : entry]
+                variance = np.mean(history**2) if zero_mean else np.var(history, ddof=ddof)
+                baseline_all[i] = np.sqrt(variance * cfg.periods_per_year)
+    else:
+        rolling_fn = rolling_parkinson if estimator == "parkinson" else rolling_yang_zhang
+        rolling = rolling_fn(prices, window=window, annualized=False).to_numpy()
+        baseline_all = rolling[np.clip(entry_all, 0, n_prices - 1)] * np.sqrt(cfg.periods_per_year)
+    calibration = np.full(len(events), np.nan)
+    history_counts = np.zeros(len(events), dtype=int)
+    moves = events["abs_event_return"].to_numpy(dtype=float)
+    completed_at = event_pp + event_window - 1
+    for i, entry in enumerate(entry_all):
+        prior = moves[(completed_at <= entry) & (event_pp < event_pp[i]) & np.isfinite(moves)]
+        history_counts[i] = len(prior)
+        if len(prior) >= cfg.min_history_events:
+            calibration[i] = prior.mean() * cfg.implied_move_multiplier
 
     # --- window-fit filter (vectorized)
-    back_need = max(cfg.entry_offset, cfg.back_expiry_offset
-                    if cfg.structure == "calendar" else 0)
+    back_need = max(cfg.entry_offset, cfg.back_expiry_offset if cfg.structure == "calendar" else 0)
     fwd_need = max(cfg.exit_offset, cfg.front_expiry_offset)
     usable = (event_pp - back_need >= 0) & (event_pp + fwd_need < n_prices)
+    usable &= np.isfinite(baseline_all) & (baseline_all > 0)
+    if implied_vols is None:
+        usable &= np.isfinite(calibration)
     n_skipped = int((~usable).sum())
     if not usable.any():
         raise BacktestError(
-            f"No event has enough surrounding history for this configuration "
+            f"No event has enough surrounding or prior calibration history for this configuration "
             f"(needs {back_need} sessions before and {fwd_need} after each event, "
             f"history has {n_prices} sessions)."
         )
@@ -624,9 +666,7 @@ def run_backtest(prices: pd.DataFrame,
     exit_spot = close[event_pp + cfg.exit_offset]
 
     # --- volatility inputs
-    baseline = ev["sigma_baseline"].to_numpy(dtype=float)
-    if not events.attrs.get("annualized", True):
-        baseline = baseline * np.sqrt(cfg.periods_per_year)
+    baseline = baseline_all[usable]
     if np.any(~np.isfinite(baseline)) or np.any(baseline <= 0):
         raise BacktestError(
             "Non-positive or non-finite baseline volatility in the event frame, "
@@ -642,41 +682,38 @@ def run_backtest(prices: pd.DataFrame,
         if np.isscalar(implied_vols):
             front_iv_quoted = np.full(m, float(implied_vols))
         else:
+            if implied_observed_at is None:
+                raise BacktestError(
+                    "Per-event implied_vols require implied_observed_at timestamps."
+                )
+            observed = pd.to_datetime(implied_observed_at.reindex(ev.index), utc=True)
+            entry_close = pd.DatetimeIndex(prices.index[entry_pp]).tz_localize(
+                "America/New_York"
+            ) + pd.Timedelta(hours=16)
+            if (
+                observed.isna().any()
+                or (observed.to_numpy() > entry_close.tz_convert("UTC").to_numpy()).any()
+            ):
+                raise BacktestError("IV observations must be available by the entry close.")
             front_iv_quoted = pd.Series(implied_vols).reindex(ev.index).to_numpy(dtype=float)
         if np.any(~np.isfinite(front_iv_quoted)) or np.any(front_iv_quoted <= 0):
             raise BacktestError("implied_vols must be finite and strictly positive.")
         # Decompose the quoted flat IV into its diffusive and event parts, so the
         # event loading can be released on the event session (the IV crush)
         # instead of being smeared across the whole term.
-        quote_tau = (implied_vol_days * dt
-                     if implied_vol_days is not None else front_tau0)
-        jump_var_total = np.clip(
-            (front_iv_quoted ** 2 - baseline ** 2) * quote_tau, 0.0, None
-        )
-        iv_source = "supplied"
+        quote_tau = implied_vol_days * dt if implied_vol_days is not None else front_tau0
+        jump_var_total = np.clip((front_iv_quoted**2 - baseline**2) * quote_tau, 0.0, None)
+        iv_source = "constant_iv_scenario" if np.isscalar(implied_vols) else "timestamped_iv"
     else:
-        if m < 2:
-            raise BacktestError(
-                "The default implied-vol construction needs at least 2 events for its "
-                "leave-one-out benchmark, supply implied_vols instead."
-            )
-        # Leave-one-out mean absolute event move. What this name typically
-        # delivers, computed without using the event's own outcome.
-        abs_move = ev["abs_event_return"].to_numpy(dtype=float)
-        loo_move = (np.nansum(abs_move) - abs_move) / (m - 1)
-        implied_move = cfg.implied_move_multiplier * loo_move
-        # Convert the move into the variance that makes the straddle's event
-        # component worth exactly that move. Calibrating on variance directly
-        # would leave the position ~20% underpriced for a jump-like move, see
-        # the module docstring.
+        implied_move = calibration[usable]
         jump_var_total = (implied_move / SQRT_2_OVER_PI) ** 2
-        iv_source = f"historical_move(k={cfg.implied_move_multiplier:g})"
+        iv_source = f"expanding_historical_move_scenario(k={cfg.implied_move_multiplier:g})"
 
     # Adverse slippage in vol points. Sell the short leg lower, buy the long
     # leg higher. Applied to the level each leg trades at.
     slip = cfg.slippage_vol_points
     front_baseline = np.clip(baseline - slip, 1e-6, None)
-    back_baseline = baseline + slip
+    back_baseline = baseline * cfg.back_iv_multiplier + slip
 
     # --- fraction of the event loading still ahead, at each grid point.
     # The event return sits at step `entry_offset - 1` (the return dated on the
@@ -699,16 +736,20 @@ def run_backtest(prices: pd.DataFrame,
     # window can actually deliver.
     last_event_step = max(in_path)
     grid_t = np.arange(H + 1)
-    jump_remaining = np.tile(
-        (grid_t <= last_event_step).astype(float)[None, :], (m, 1)
-    )
+    jump_remaining = np.tile((grid_t <= last_event_step).astype(float)[None, :], (m, 1))
 
     # --- front (short) leg
     front_expiry_pp = event_pp + cfg.front_expiry_offset
     front_pnl_long, front_premium, front_iv = _hedged_leg_pnl(
-        spot_grid, spot_pp_grid, strike, front_expiry_pp,
-        front_baseline[:, None], jump_var_total[:, None], jump_remaining,
-        cfg.rate, dt,
+        spot_grid,
+        spot_pp_grid,
+        strike,
+        front_expiry_pp,
+        front_baseline[:, None],
+        jump_var_total[:, None],
+        jump_remaining,
+        cfg.rate,
+        dt,
     )
     front_pnl = -front_pnl_long  # we are short the front leg
 
@@ -717,9 +758,15 @@ def run_backtest(prices: pd.DataFrame,
     if cfg.structure == "calendar":
         back_expiry_pp = event_pp - cfg.back_expiry_offset
         back_pnl, back_premium, back_iv = _hedged_leg_pnl(
-            spot_grid, spot_pp_grid, strike, back_expiry_pp,
-            back_baseline[:, None], np.zeros((m, 1)), np.zeros((m, H + 1)),
-            cfg.rate, dt,
+            spot_grid,
+            spot_pp_grid,
+            strike,
+            back_expiry_pp,
+            back_baseline[:, None],
+            np.zeros((m, 1)),
+            np.zeros((m, H + 1)),
+            cfg.rate,
+            dt,
         )
     else:
         back_pnl = np.zeros(m)
@@ -754,38 +801,50 @@ def run_backtest(prices: pd.DataFrame,
         raise BacktestError("Non-positive capital basis, cannot compute returns.")
     ret = net_pnl / basis
 
-    trades = pd.DataFrame({
-        "announcement_date": ev["announcement_date"].to_numpy(),
-        "entry_date": prices.index[entry_pp],
-        "event_date": prices.index[event_pp],
-        "exit_date": prices.index[event_pp + cfg.exit_offset],
-        "entry_spot": close[entry_pp],
-        "exit_spot": exit_spot,
-        "strike": close[entry_pp],
-        "sigma_baseline": baseline,
-        "front_iv": front_iv,
-        "implied_event_move": np.sqrt(jump_var_total),
-        "back_iv": back_iv,
-        "front_premium": front_premium,
-        "back_premium": back_premium,
-        "net_credit": net_credit,
-        "realized_move": ev["abs_event_return"].to_numpy(dtype=float),
-        "front_pnl": front_pnl,
-        "back_pnl": back_pnl,
-        "cost": cost,
-        "net_pnl": net_pnl,
-        "capital_basis": basis,
-        "return": ret,
-    }, index=pd.DatetimeIndex(ev.index, name="session_date"))
+    trades = pd.DataFrame(
+        {
+            "announcement_date": ev["announcement_date"].to_numpy(),
+            "entry_date": prices.index[entry_pp],
+            "event_date": prices.index[event_pp],
+            "exit_date": prices.index[event_pp + cfg.exit_offset],
+            "entry_spot": close[entry_pp],
+            "exit_spot": exit_spot,
+            "strike": close[entry_pp],
+            "sigma_baseline": baseline,
+            "front_iv": front_iv,
+            "implied_event_move": np.sqrt(jump_var_total) * SQRT_2_OVER_PI,
+            "entry_baseline_date": prices.index[entry_pp],
+            "history_events": history_counts[usable],
+            "back_iv": back_iv,
+            "front_premium": front_premium,
+            "back_premium": back_premium,
+            "net_credit": net_credit,
+            "realized_move": ev["abs_event_return"].to_numpy(dtype=float),
+            "front_pnl": front_pnl,
+            "back_pnl": back_pnl,
+            "cost": cost,
+            "net_pnl": net_pnl,
+            "capital_basis": basis,
+            "return": ret,
+        },
+        index=pd.DatetimeIndex(ev.index, name="session_date"),
+    )
     trades.attrs["iv_source"] = iv_source
 
     # --- statistics
     # Additive unless `compound` is set. A short options position can lose more
     # than its premium, so compounding a sub -100% return would send the equity
     # curve negative and make every downstream statistic meaningless.
+    if cfg.compound and np.any(ret <= -1):
+        raise BacktestError(
+            "Cannot compound returns at or below -100%; use additive scenario accounting."
+        )
     equity = np.cumprod(1.0 + ret) if cfg.compound else 1.0 + np.cumsum(ret)
-    epy = (cfg.events_per_year if cfg.events_per_year is not None
-           else infer_events_per_year(pd.DatetimeIndex(ev.index)))
+    epy = (
+        cfg.events_per_year
+        if cfg.events_per_year is not None
+        else infer_events_per_year(pd.DatetimeIndex(ev.index))
+    )
     wins = ret[ret > 0]
     losses = ret[ret < 0]
     gross_win = float(wins.sum())
@@ -798,11 +857,10 @@ def run_backtest(prices: pd.DataFrame,
         "mean_return": float(ret.mean()),
         "median_return": float(np.median(ret)),
         "std_return": sd,
-        "sharpe_ratio": (
-            float(ret.mean() / sd * np.sqrt(epy)) if sd > 0 else float("nan")
-        ),
+        "sharpe_ratio": (float(ret.mean() / sd * np.sqrt(epy)) if sd > 0 else float("nan")),
         "profit_factor": (
-            float(gross_win / gross_loss) if gross_loss > 0
+            float(gross_win / gross_loss)
+            if gross_loss > 0
             else (float("inf") if gross_win > 0 else float("nan"))
         ),
         "max_drawdown": _max_drawdown(equity, cfg.compound),

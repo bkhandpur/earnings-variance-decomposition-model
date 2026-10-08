@@ -6,6 +6,7 @@ down" from "the data came back malformed" from "there is not enough history
 to estimate anything", which matters when the package is driven from a batch
 job over hundreds of tickers.
 """
+
 from __future__ import annotations
 
 from typing import Optional, Sequence
@@ -60,8 +61,9 @@ class InsufficientDataError(DataError):
     Carries the shortfall so callers can widen the request programmatically.
     """
 
-    def __init__(self, message: str, required: Optional[int] = None,
-                 available: Optional[int] = None) -> None:
+    def __init__(
+        self, message: str, required: Optional[int] = None, available: Optional[int] = None
+    ) -> None:
         self.required = required
         self.available = available
         if required is not None and available is not None:

@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import json
 import sys
 import textwrap
 from pathlib import Path
@@ -688,6 +689,20 @@ def analyze_ticker(
         if verbose:
             print(f"\n[VRP skipped] {exc}")
 
+    stages = {
+        "decomposition": "complete",
+        "vrp": "complete" if vrp is not None else "optional unavailable",
+        "backtest": "not requested" if args.no_backtest else "pending",
+    }
+
+    def stage_export() -> None:
+        if args.save_csv:
+            outdir = Path(args.outdir)
+            outdir.mkdir(parents=True, exist_ok=True)
+            (outdir / f"{ticker}_stages.json").write_text(
+                json.dumps({"ticker": ticker, "stages": stages}, indent=2) + "\n"
+            )
+
     bt = None
     if not args.no_backtest:
         try:
@@ -709,10 +724,15 @@ def analyze_ticker(
             )
             if verbose:
                 _report_backtest(bt, args)
+            stages["backtest"] = "complete"
         except VolDecomError as exc:
-            if verbose:
-                print(f"\n[Backtest skipped] {exc}")
+            stages["backtest"] = f"failed {type(exc).__name__} {exc}"
+            stage_export()
+            # Requested backtesting is a required stage. The caller records
+            # failure and returns a nonzero process status.
+            raise
 
+    stage_export()
     if args.save_csv:
         outdir = Path(args.outdir)
         outdir.mkdir(parents=True, exist_ok=True)
@@ -737,6 +757,7 @@ def analyze_ticker(
 
     return {
         "ticker": ticker,
+        "stages": stages,
         "prices": prices,
         "events": events,
         "summary": summary,
@@ -791,9 +812,9 @@ def _cross_section(results: List[Dict[str, Any]], failures: List[Tuple[str, str]
             "display.width", 200, "display.max_columns", 30, "display.max_rows", None
         ):
             print(textwrap.indent(formatted.to_string(index=False), "  "))
-        print("\n  Sorted by variance ratio, the share of event-window variance not")
-        print("  explained by the diffusive baseline. Higher means more of this name's")
-        print("  risk is released as a discrete jump rather than as ordinary vol.")
+        print("\n  Sorted by total-to-baseline variance ratio.")
+        print("  A ratio of 4 means total variance is four times baseline.")
+        print("  The unclamped excess share is 1 - 1 / ratio, or 75 percent at 4.")
 
     if failures:
         print("\n  Not processed")
@@ -841,7 +862,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         for ticker in tickers:
             try:
                 results.append(analyze_ticker(ticker, args, cfg, verbose=verbose))
-            except VolDecomError as exc:
+            except (VolDecomError, OSError) as exc:
                 reason = f"[{type(exc).__name__}] {exc}"
                 failures.append((ticker, reason))
                 if args.fail_fast:

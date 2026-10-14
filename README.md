@@ -61,3 +61,17 @@ Tests use synthetic inputs, independent pricing calculations and future-data
 perturbations. CI installs the built wheel and runs the offline CLI.
 
 MIT license. The [original prototype](prototype/original_prototype.py) is preserved.
+
+
+## Execution and required stages
+
+Entry-only adverse slippage is priced around the unchanged model IV. Model
+marks and hedge deltas remain fixed. Exported trades separate model gross P&L,
+execution adjustment and other fees. All amounts are per underlying unit. One
+standard 100-share contract scales each amount and hedge by 100. Premium-based
+returns do not establish broker capital requirements.
+
+Requested backtests fail the run when their configuration or usable history is
+invalid. `--no-backtest` requests decomposition only. `--save-csv` also writes a
+small stage-status JSON record. Warm-up exclusions within valid historical runs
+remain explicit. See [methodology](docs/methodology.md).

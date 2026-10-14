@@ -4,8 +4,8 @@ What is being simulated
 -----------------------
 The trade from the source research. Around each earnings event, sell the
 straddle that expires *after* the announcement and buy the straddle that
-expires *before* it, delta-hedging daily so the position carries no
-directional exposure. The short leg holds the event, the long leg neutralizes
+expires *before* it, delta-hedging daily to reduce local directional exposure. Gaps retain
+directional and nonlinear risk. The short leg holds the event, the long leg neutralizes
 the pre-event gamma. What remains is a bet that the market overprices the
 one-off earnings jump.
 
@@ -27,9 +27,9 @@ delta-hedged position is the dollar-gamma form
 ``0.5 * Gamma * S^2 * (sigma^2 dt - r^2)``. That is a *second-order* expansion
 of the payoff, and earnings are precisely where it fails. For a 25% jump the
 quadratic term diverges badly from the straddle's true payoff, which is
-piecewise linear far from the strike and therefore bounded. Using it produces
-losses several times larger than the position can actually sustain, an
-artifact of the approximation, not a property of the trade. Full revaluation
+piecewise linear far from the strike with unbounded upside short-option loss. Using it produces
+inaccurate losses under large moves. Full revaluation retains the short-option
+tail risk. Full revaluation
 costs one extra array of normal CDFs and is exact for the hedging strategy
 being simulated, so that is what this module does.
 
@@ -162,13 +162,20 @@ def bs_straddle(
         ``(price, delta, gamma)``, each broadcast to the common shape.
 
     Raises:
-        ValueError: If ``vol`` or ``spot`` or ``strike`` is non-positive
-            anywhere.
+        ValueError: For nonfinite inputs, nonpositive spot, strike or volatility,
+            or negative time. At zero time return intrinsic value, sign delta
+            with zero at the strike, and zero gamma by convention.
     """
     S = np.asarray(spot, dtype=float)
     K = np.asarray(strike, dtype=float)
     sig = np.asarray(vol, dtype=float)
-    t = np.clip(np.asarray(tau, dtype=float), _MIN_TAU, None)
+    raw_t = np.asarray(tau, dtype=float)
+    r = np.asarray(rate, dtype=float)
+    if any(np.any(~np.isfinite(v)) for v in (S, K, sig, raw_t, r)):
+        raise ValueError("bs_straddle requires finite inputs.")
+    if np.any(raw_t < 0):
+        raise ValueError("bs_straddle requires nonnegative time.")
+    t = np.maximum(raw_t, _MIN_TAU)
 
     if np.any(S <= 0) or np.any(K <= 0):
         raise ValueError("bs_straddle requires strictly positive spot and strike.")
@@ -176,16 +183,23 @@ def bs_straddle(
         raise ValueError("bs_straddle requires strictly positive volatility.")
 
     sqrt_t = np.sqrt(t)
-    d1 = (np.log(S / K) + (rate + 0.5 * sig**2) * t) / (sig * sqrt_t)
+    d1 = (np.log(S / K) + (r + 0.5 * sig**2) * t) / (sig * sqrt_t)
     d2 = d1 - sig * sqrt_t
-    disc = np.exp(-rate * t)
+    disc = np.exp(-r * t)
 
     call = S * _norm_cdf(d1) - K * disc * _norm_cdf(d2)
     put = K * disc * _norm_cdf(-d2) - S * _norm_cdf(-d1)
     price = call + put
     delta = 2.0 * _norm_cdf(d1) - 1.0
     gamma = 2.0 * _norm_pdf(d1) / (S * sig * sqrt_t)
-    return price, delta, gamma
+    # At expiry intrinsic value and symmetric ATM delta. Gamma has no
+    # classical value at the strike and is returned as zero by convention.
+    expired = raw_t == 0
+    return (
+        np.where(expired, np.abs(S - K), price),
+        np.where(expired, np.sign(S - K), delta),
+        np.where(expired, 0.0, gamma),
+    )
 
 
 @dataclass(frozen=True)
@@ -226,8 +240,9 @@ class BacktestConfig:
             premium, charged at entry. Applied to both legs.
         slippage_vol_points: Volatility points of adverse slippage applied to
             the level each leg trades at, in decimals (0.01 = 1 vol point).
-            The short leg is sold 1 point lower and the long leg bought 1
-            point higher, so this is always a cost.
+            Entry-only execution adjustment around unchanged model values. The
+            short leg is sold lower and the long leg bought higher. Exit
+            marks and hedge deltas use the unchanged model path.
         rate: Risk-free rate used in Black-Scholes.
         capital_basis: Denominator for per-event returns.
             ``"front_premium"`` (default) divides by the short leg's premium,
@@ -712,8 +727,8 @@ def run_backtest(
     # Adverse slippage in vol points. Sell the short leg lower, buy the long
     # leg higher. Applied to the level each leg trades at.
     slip = cfg.slippage_vol_points
-    front_baseline = np.clip(baseline - slip, 1e-6, None)
-    back_baseline = baseline * cfg.back_iv_multiplier + slip
+    front_baseline = baseline.copy()
+    back_baseline = baseline * cfg.back_iv_multiplier
 
     # --- fraction of the event loading still ahead, at each grid point.
     # The event return sits at step `entry_offset - 1` (the return dated on the
@@ -773,12 +788,32 @@ def run_backtest(
         back_premium = np.zeros(m)
         back_iv = np.full(m, np.nan)
 
-    net_credit = front_premium - back_premium
+    # Apply adverse entry execution at the full model entry IV. This does
+    # not alter any later marks or deltas. Slippage is entry-only.
+    front_execution, _, _ = bs_straddle(
+        close[entry_pp],
+        close[entry_pp],
+        np.maximum(front_iv - slip, 1e-6),
+        front_tau0,
+        rate=cfg.rate,
+    )
+    if cfg.structure == "calendar":
+        back_execution, _, _ = bs_straddle(
+            close[entry_pp],
+            close[entry_pp],
+            back_iv + slip,
+            (cfg.entry_offset - cfg.back_expiry_offset) * dt,
+            rate=cfg.rate,
+        )
+    else:
+        back_execution = np.zeros(m)
+    execution_adjustment = front_execution - front_premium - (back_execution - back_premium)
+    net_credit = front_execution - back_execution
     gross_pnl = front_pnl + back_pnl
 
     # Transaction cost. Bps of the gross premium traded on both legs.
     cost = (cfg.transaction_cost_bps / 10_000.0) * (front_premium + back_premium)
-    net_pnl = gross_pnl - cost
+    net_pnl = gross_pnl + execution_adjustment - cost
 
     # --- returns
     if cfg.capital_basis == "front_premium":
@@ -819,6 +854,10 @@ def run_backtest(
             "front_premium": front_premium,
             "back_premium": back_premium,
             "net_credit": net_credit,
+            "front_entry_execution": front_execution,
+            "back_entry_execution": back_execution,
+            "model_gross_pnl": gross_pnl,
+            "execution_adjustment": execution_adjustment,
             "realized_move": ev["abs_event_return"].to_numpy(dtype=float),
             "front_pnl": front_pnl,
             "back_pnl": back_pnl,

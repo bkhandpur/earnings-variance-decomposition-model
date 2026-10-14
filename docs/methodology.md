@@ -86,3 +86,21 @@ win rate alone does not summarize tail risk. Short option losses remain unbounde
 The numerical API exposes `decompose_events`, `summarize_decomposition`, `vol_cone`,
 `volatility_risk_premium`, `BacktestConfig`, `run_backtest` and `bs_straddle`.
 Provider access and disk caching are optional; CSV inputs do not require yfinance.
+
+
+## Execution accounting
+
+`slippage_vol_points` is an adverse entry-only adjustment to the full entry IV.
+Model option marks, entry IV, hedge deltas and gross P&L remain unchanged. The
+short execution premium uses model IV less slippage with a positive floor. The
+long entry uses model IV plus slippage. Exit uses the unchanged model mark.
+Exports separate `model_gross_pnl`, `execution_adjustment`, `cost` and `net_pnl`.
+All cash amounts are per underlying unit. Multiply by 100 for one standard
+100-share option contract, including the associated hedge. Premium normalization
+is a risk proxy and does not establish broker margin or a portfolio capital budget.
+
+At zero time the pricing API returns intrinsic value and sign delta, with zero
+delta at the strike and zero gamma by convention. Negative time and nonfinite
+inputs fail validation. Requested backtests are required stages. Invalid settings
+or insufficient usable history return a failure. Use `--no-backtest` for a
+decomposition-only run. Historical warm-up events remain explicitly skipped.
